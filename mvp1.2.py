@@ -168,7 +168,15 @@ Previous conversation:
 Review excerpts:
 {review_context}
 
-If there are no relevant responses, return "No recommendations found based on the current reviews." as the description for a single recommendation with an empty restaurant name and no photos.
+
+**Important:**  
+- If there are NO relevant reviews, return exactly ONE object with:  
+  "restaurant": ""  
+  "dish": ""  
+  "description": "No recommendations found based on the current reviews."  
+  "photos": []
+
+Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge.
 """
 
     response = client.chat.completions.create(
@@ -215,16 +223,26 @@ def render_recommendations(recs):
 
         for i, photo in enumerate(photos):
             with cols[i]:
-                st.image(photo)
+                st.markdown(
+                    f"""
+                    <img src=\"{photo}\" style=\"width: 100%; max-width: 400px; max-height: 400px; object-fit: cover; border-radius: 8px;\" />
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 # -----------------------------
 # STREAMLIT UI
 # -----------------------------
-st.set_page_config(page_title="FoodFinder - Your friend for finding great food", layout="wide")
+st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
 
-st.title("🍽️ FoodFinder - Your friend for finding great food")
+st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
 st.write("Ask for restaurant recommendations based on real reviews.")
+
+if st.button("Clear history"):
+    st.session_state.conversation_memory = []
+    st.session_state.recommended_restaurants = set()
+    st.rerun()
 
 
 # -----------------------------
@@ -242,7 +260,7 @@ for msg in st.session_state.conversation_memory:
 # -----------------------------
 # USER INPUT
 # -----------------------------
-user_query = st.chat_input("What kind of food are you looking for?")
+user_query = st.chat_input("What kind of food or drink are you looking for?")
 
 if user_query:
 
