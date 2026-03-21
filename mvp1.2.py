@@ -82,8 +82,8 @@ def is_food_query(query):
     response = client.chat.completions.create(
         model="gpt-5-nano",
         messages=[
-            {"role": "system", "content": "Answer only yes or no. Is this about food, drinks, restaurants, or dining?"},
-            {"role": "user", "content": query}
+            {"role": "system", "content": "Answer only yes or no. Is this about food, restaurants, or dining?"},
+            {"role": "user", "content": query},
         ],
         temperature=0
     )
