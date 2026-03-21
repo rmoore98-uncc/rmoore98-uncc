@@ -64,18 +64,18 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector < 0.4   -- ✅ NEW THRESHOLD
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
+    cur.execute(query, (embedding_str, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
     conn.close()
 
     return rows
+
 
 # -----------------------------
 # BUILD MEMORY CONTEXT
@@ -118,7 +118,7 @@ def build_review_context(docs):
 
         context += f"""
 Restaurant: {d['place_name']}
-Review Text: {d['chunk_text']}
+Review: {d['chunk_text']}
 Similarity Score: {round(d['distance'],4)}
 Photo Links: {photos_text}
 """
@@ -133,20 +133,10 @@ def run_rag(user_query):
 
     memory_context = build_memory_context()
 
-
     docs = similarity_search(user_query, k=8)
 
-    # ✅ STEP 2: DISTANCE GUARD
-    if docs:
-        avg_distance = sum(d["distance"] for d in docs) / len(docs)
-        if avg_distance > 0.45:
-            docs = []
-
-    # ✅ STEP 3: FALLBACK (STRUCTURED)
     if not docs:
-        return [{
-            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-        }]
+        return []
 
     review_context = build_review_context(docs)
 
@@ -168,18 +158,19 @@ Return ONLY valid JSON using this structure:
   }}
 ]
 
-Rules:
-- Only recommend restaurants if clearly relevant to the query
-- review_excerpt must come directly from the review text (max 25 words)
-- why_this_was_selected must explain relevance (max 30 words)
-
 Previous conversation:
 {memory_context}
 
 Review excerpts:
 {review_context}
 
-Use only the provided reviews. Do NOT make up information.
+
+
+**Important:**  
+- If there are NO relevant reviews, return "There are no relevant reviews based on your input, try rephrasing your question or asking about something else." instead of JSON.
+
+
+Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge. Provide your justification for selecting the review_excerpt.
 """
 
     response = client.chat.completions.create(
@@ -188,7 +179,6 @@ Use only the provided reviews. Do NOT make up information.
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
         ],
-        temperature=0.3
     )
 
     answer = response.choices[0].message.content
