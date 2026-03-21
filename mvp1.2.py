@@ -173,10 +173,11 @@ Review excerpts:
 - If there are NO relevant reviews, return exactly ONE object with:  
   "restaurant": ""  
   "dish": ""  
-  "description": "No recommendations found based on the current reviews."  
+  "description": "No recommendations found based on the current reviews." 
+  "review_excerpt": "" 
   "photos": []
 
-Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge.
+Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge. Provide your justification for selecting the review_excerpt.
 """
 
     response = client.chat.completions.create(
@@ -216,6 +217,8 @@ def render_recommendations(recs):
             st.write(f"**Recommended dish:** {dish}")
 
         st.write(r.get("description", ""))
+
+        st.write(r.get("review_excerpt", ""))
 
         photos = r.get("photos", [])
 
