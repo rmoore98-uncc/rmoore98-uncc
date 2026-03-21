@@ -64,11 +64,12 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
+        AND rc.embedding <=> %s::vector < 0.4   -- ✅ NEW THRESHOLD
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, k))
+    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
@@ -76,6 +77,18 @@ def similarity_search(query_text, k=5):
 
     return rows
 
+# Food related query function --------------
+def is_food_query(query):
+    response = client.chat.completions.create(
+        model="gpt-5-nano",
+        messages=[
+            {"role": "system", "content": "Answer only yes or no. Is this about food, drinks, restaurants, or dining?"},
+            {"role": "user", "content": query}
+        ],
+        temperature=0
+    )
+    return "yes" in response.choices[0].message.content.lower()
+#-----------------------------
 
 # -----------------------------
 # BUILD MEMORY CONTEXT
@@ -118,7 +131,7 @@ def build_review_context(docs):
 
         context += f"""
 Restaurant: {d['place_name']}
-Review: {d['chunk_text']}
+Review Text: {d['chunk_text']}
 Similarity Score: {round(d['distance'],4)}
 Photo Links: {photos_text}
 """
@@ -133,10 +146,35 @@ def run_rag(user_query):
 
     memory_context = build_memory_context()
 
+    # ✅ STEP 1: FILTER NON-FOOD QUERIES
+    if not is_food_query(user_query):
+        return [{
+            "restaurant": "",
+            "dish": "",
+            "description": "That question isn't related to food or restaurants. Try asking about dining recommendations.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
+
     docs = similarity_search(user_query, k=8)
 
+    # ✅ STEP 2: DISTANCE GUARD
+    if docs:
+        avg_distance = sum(d["distance"] for d in docs) / len(docs)
+        if avg_distance > 0.45:
+            docs = []
+
+    # ✅ STEP 3: FALLBACK (STRUCTURED)
     if not docs:
-        return ["There are no relevant reviews based on your input, try rephrasing your question or asking about something else."]
+        return [{
+            "restaurant": "",
+            "dish": "",
+            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
 
     review_context = build_review_context(docs)
 
@@ -158,21 +196,18 @@ Return ONLY valid JSON using this structure:
   }}
 ]
 
+Rules:
+- Only recommend restaurants if clearly relevant to the query
+- review_excerpt must come directly from the review text (max 25 words)
+- why_this_was_selected must explain relevance (max 30 words)
+
 Previous conversation:
 {memory_context}
 
 Review excerpts:
 {review_context}
 
-
-
-**Important:**  
-- Only recommend restaurants if the reviews are clearly relevant to the user query.
-- If the query is unrelated to food, restaurants, or dining, return the fallback response.
-- If there are NO relevant reviews, return "There are no relevant reviews based on your input, try rephrasing your question or asking about something else." instead of JSON.
-
-
-Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge. Provide your justification for selecting the review_excerpt.
+Use only the provided reviews. Do NOT make up information.
 """
 
     response = client.chat.completions.create(
@@ -181,6 +216,7 @@ Use only information from the review excerpts provided. Do NOT make up any detai
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
         ],
+        temperature=0.3
     )
 
     answer = response.choices[0].message.content
