@@ -131,31 +131,40 @@ Photo Links: {photos_text}
 # MAIN RAG FUNCTION
 # -----------------------------
 def run_rag(user_query):
+    """
+    Main RAG function:
+    - Performs similarity search
+    - Returns recommendations or fallback if no relevant reviews
+    - Always appends the result to conversation memory
+    """
 
     memory_context = build_memory_context()
-
     docs = similarity_search(user_query, k=8)
 
-
-# optional if we want to incorporate distance to determine relevance:
-#avg_distance = sum(d["distance"] for d in docs) / len(docs)
-#if avg_distance > 0.45:
-
+    # -----------------------------
+    # Fallback for irrelevant queries
+    # -----------------------------
     if not docs:
         fallback = [{
-        "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-    }]
+            "restaurant": "",
+            "dish": "",
+            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
 
-    # Save in memory
-    st.session_state.conversation_memory.append({
-        "user": user_query,
-        "assistant": fallback
-    })
+        # Append to memory
+        st.session_state.conversation_memory.append({
+            "user": user_query,
+            "assistant": fallback
+        })
 
-    return fallback
+        return fallback
 
-
-
+    # -----------------------------
+    # Build review context for LLM
+    # -----------------------------
     review_context = build_review_context(docs)
 
     system_prompt = f"""
@@ -182,37 +191,51 @@ Previous conversation:
 Review excerpts:
 {review_context}
 
-
-
 **Important:**  
-- If there are NO relevant reviews, return "There are no relevant reviews based on your input, try rephrasing your question or asking about something else." instead of JSON.
-
-
-Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge. Provide your justification for selecting the review_excerpt.
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
+- Use only information from the review excerpts provided. Do NOT make up any details.
+- Provide your justification for selecting the review_excerpt.
 """
 
+    # -----------------------------
+    # Call LLM
+    # -----------------------------
     response = client.chat.completions.create(
-        model="gpt-5-nano",
+        model="gpt-4o-mini",  # stable model for chat
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
         ],
+        temperature=0.3
     )
 
     answer = response.choices[0].message.content
 
+    # -----------------------------
+    # Parse response safely
+    # -----------------------------
     try:
         parsed = json.loads(answer)
     except:
-        parsed = []
+        parsed = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "Error generating recommendations. Please try again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
 
+    # -----------------------------
+    # Append to conversation memory
+    # -----------------------------
     st.session_state.conversation_memory.append({
         "user": user_query,
         "assistant": parsed
     })
 
     return parsed
-
 
 # -----------------------------
 # RENDER RECOMMENDATIONS
