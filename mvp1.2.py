@@ -77,19 +77,6 @@ def similarity_search(query_text, k=5):
 
     return rows
 
-# # Food related query function --------------
-# def is_food_query(query):
-#     response = client.chat.completions.create(
-#         model="gpt-5-nano",
-#         messages=[
-#             {"role": "system", "content": "Answer only yes or no. Is this about food, restaurants, or dining?"},
-#             {"role": "user", "content": query},
-#         ],
-#         temperature=0
-#     )
-#     return "yes" in response.choices[0].message.content.lower()
-# #-----------------------------
-
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
@@ -146,16 +133,6 @@ def run_rag(user_query):
 
     memory_context = build_memory_context()
 
-    # ✅ STEP 1: FILTER NON-FOOD QUERIES
-    # #if not is_food_query(user_query):
-      #  return [{
-      #      "restaurant": "",
-      #      "dish": "",
-      #      "description": "That question isn't related to food or restaurants. Try asking about dining recommendations.",
-      #      "review_excerpt": "",
-      #      "why_this_was_selected": "",
-      #      "photos": []
-      #  }]
 
     docs = similarity_search(user_query, k=8)
 
@@ -168,12 +145,7 @@ def run_rag(user_query):
     # ✅ STEP 3: FALLBACK (STRUCTURED)
     if not docs:
         return [{
-            "restaurant": "",
-            "dish": "",
             "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
-            "photos": []
         }]
 
     review_context = build_review_context(docs)
