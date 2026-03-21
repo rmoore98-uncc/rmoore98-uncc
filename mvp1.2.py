@@ -146,12 +146,7 @@ def run_rag(user_query):
     # -----------------------------
     if not docs:
         fallback = [{
-            "restaurant": "",
-            "dish": "",
             "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
-            "photos": []
         }]
 
         # Append to memory
