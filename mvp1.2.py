@@ -64,7 +64,7 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector > 0.4 
+        AND rc.embedding <=> %s::vector < 0.6 
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
@@ -214,12 +214,12 @@ def render_recommendations(recs):
 
         st.write(r.get("description", ""))
 
-        # ✅ NEW: review excerpt
+        #review excerpt
         excerpt = r.get("review_excerpt")
         if excerpt:
             st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
 
-        # ✅ NEW: explanation
+        #explanation
         why = r.get("why_this_was_selected")
         if why:
             st.caption(f"💡 Explanation: {why}")
