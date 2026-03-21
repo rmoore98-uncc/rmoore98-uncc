@@ -148,12 +148,14 @@ Using the review excerpts, generate THREE restaurant recommendations.
 Return ONLY valid JSON using this structure:
 
 [
-  {{
+  {
     "restaurant": "restaurant name",
     "dish": "specific dish mentioned in reviews",
     "description": "short recommendation",
+    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
+    "why_this_was_selected": "brief explanation tying the user query to the review",
     "photos": ["photo_url1", "photo_url2"]
-  }}
+  }
 ]
 
 Rules:
@@ -161,6 +163,14 @@ Rules:
 - Photos must come from the provided photo links.
 - Use at least one dish from the review text.
 - Maximum 2 photos per restaurant.
+- "review_excerpt" must come directly from the provided review text.
+- Keep excerpts under 25 words.
+- Do not heavily paraphrase excerpts.
+
+- "why_this_was_selected" must explain WHY this restaurant matches the user query.
+- It must reference details from the review (dish, vibe, quality, etc.).
+- Keep it under 30 words.
+
 
 Previous conversation:
 {memory_context}
@@ -170,12 +180,8 @@ Review excerpts:
 
 
 **Important:**  
-- If there are NO relevant reviews, return exactly ONE object with:  
-  "restaurant": ""  
-  "dish": ""  
-  "description": "No recommendations found based on the current reviews." 
-  "review_excerpt": "" 
-  "photos": []
+- If there are NO relevant reviews, return "There are no relevant reviews based on your input, try rephrasing your question or asking about something else." instead of JSON.
+
 
 Use only information from the review excerpts provided. Do NOT make up any details or use external knowledge. Provide your justification for selecting the review_excerpt.
 """
@@ -218,7 +224,15 @@ def render_recommendations(recs):
 
         st.write(r.get("description", ""))
 
-        st.write(r.get("review_excerpt", ""))
+        # ✅ NEW: review excerpt
+        excerpt = r.get("review_excerpt")
+        if excerpt:
+            st.caption(f"🗣️ \"{excerpt}\"")
+
+        # ✅ NEW: explanation
+        why = r.get("why_this_was_selected")
+        if why:
+            st.caption(f"💡 {why}")
 
         photos = r.get("photos", [])
 
