@@ -136,10 +136,25 @@ def run_rag(user_query):
 
     docs = similarity_search(user_query, k=8)
 
+
+# optional if we want to incorporate distance to determine relevance:
+#avg_distance = sum(d["distance"] for d in docs) / len(docs)
+#if avg_distance > 0.45:
+
     if not docs:
-        return [{
-    "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-}]
+        fallback = [{
+        "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+    }]
+
+    # Save in memory
+    st.session_state.conversation_memory.append({
+        "user": user_query,
+        "assistant": fallback
+    })
+
+    return fallback
+
+
 
     review_context = build_review_context(docs)
 
