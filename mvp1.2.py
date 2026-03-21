@@ -148,35 +148,22 @@ Using the review excerpts, generate THREE restaurant recommendations.
 Return ONLY valid JSON using this structure:
 
 [
-  {
+  {{
     "restaurant": "restaurant name",
     "dish": "specific dish mentioned in reviews",
     "description": "short recommendation",
     "review_excerpt": "verbatim or lightly trimmed quote from the review text",
     "why_this_was_selected": "brief explanation tying the user query to the review",
     "photos": ["photo_url1", "photo_url2"]
-  }
+  }}
 ]
-
-Rules:
-- Restaurants must exist in the review excerpts.
-- Photos must come from the provided photo links.
-- Use at least one dish from the review text.
-- Maximum 2 photos per restaurant.
-- "review_excerpt" must come directly from the provided review text.
-- Keep excerpts under 25 words.
-- Do not heavily paraphrase excerpts.
-
-- "why_this_was_selected" must explain WHY this restaurant matches the user query.
-- It must reference details from the review (dish, vibe, quality, etc.).
-- Keep it under 30 words.
-
 
 Previous conversation:
 {memory_context}
 
 Review excerpts:
 {review_context}
+
 
 
 **Important:**  
