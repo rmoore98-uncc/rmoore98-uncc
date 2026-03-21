@@ -239,7 +239,11 @@ def render_recommendations(recs):
 
     for r in recs:
 
-        st.subheader(r.get("restaurant", "Restaurant"))
+        # Subheader logic for fallback
+        restaurant_name = r.get("restaurant")
+        if not restaurant_name:
+            restaurant_name = "No relevant restaurants"
+        st.subheader(restaurant_name)
 
         dish = r.get("dish")
         if dish:
