@@ -64,6 +64,7 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
+        AND rc.embedding <=> %s::vector < 0.4 
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
@@ -136,7 +137,9 @@ def run_rag(user_query):
     docs = similarity_search(user_query, k=8)
 
     if not docs:
-        return []
+        return [{
+    "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+}]
 
     review_context = build_review_context(docs)
 
