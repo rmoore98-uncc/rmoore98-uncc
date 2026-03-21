@@ -214,12 +214,12 @@ def render_recommendations(recs):
         # ✅ NEW: review excerpt
         excerpt = r.get("review_excerpt")
         if excerpt:
-            st.caption(f"🗣️ \"{excerpt}\"")
+            st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
 
         # ✅ NEW: explanation
         why = r.get("why_this_was_selected")
         if why:
-            st.caption(f"💡 {why}")
+            st.caption(f"💡 Explanation: {why}")
 
         photos = r.get("photos", [])
 
