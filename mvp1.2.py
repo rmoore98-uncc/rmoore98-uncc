@@ -136,7 +136,7 @@ def run_rag(user_query):
     docs = similarity_search(user_query, k=8)
 
     if not docs:
-        return []
+        return ["There are no relevant reviews based on your input, try rephrasing your question or asking about something else."]
 
     review_context = build_review_context(docs)
 
@@ -167,6 +167,8 @@ Review excerpts:
 
 
 **Important:**  
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If the query is unrelated to food, restaurants, or dining, return the fallback response.
 - If there are NO relevant reviews, return "There are no relevant reviews based on your input, try rephrasing your question or asking about something else." instead of JSON.
 
 
