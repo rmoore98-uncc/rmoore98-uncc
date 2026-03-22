@@ -190,7 +190,7 @@ Review excerpts:
 - Only recommend restaurants if the reviews are clearly relevant to the user query.
 - If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
 - Use only information from the review excerpts provided. Do NOT make up any details.
-- Provide your justification for selecting the review_excerpt based on the user query.
+- Provide your justification for selecting the review_excerpt.
 """
 
     # -----------------------------
