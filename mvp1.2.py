@@ -128,7 +128,7 @@ def similarity_search(query_text, k=8):
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, k))
+    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
