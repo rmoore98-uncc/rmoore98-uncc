@@ -131,7 +131,7 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector < 0.7
+        AND rc.embedding <=> %s::vector < 0.4
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
