@@ -154,10 +154,18 @@ def run_rag(user_query):
         }]
 
         # Append to memory
+        # Save to DB
+        save_message(
+            st.session_state.session_id,
+            user_query,
+            fallback
+        )
+
+# Save to session memory (existing behavior)
         st.session_state.conversation_memory.append({
-            "user": user_query,
-            "assistant": fallback
-        })
+    "user": user_query,
+    "assistant": fallback
+})
 
         return fallback
 
