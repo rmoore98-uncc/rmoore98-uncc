@@ -5,10 +5,6 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
-import uuid
-
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
 
 load_dotenv()
 
@@ -154,18 +150,10 @@ def run_rag(user_query):
         }]
 
         # Append to memory
-        # Save to DB
-        save_message(
-            st.session_state.session_id,
-            user_query,
-            fallback
-        )
-
-# Save to session memory (existing behavior)
         st.session_state.conversation_memory.append({
-    "user": user_query,
-    "assistant": fallback
-})
+            "user": user_query,
+            "assistant": fallback
+        })
 
         return fallback
 
@@ -285,24 +273,6 @@ def render_recommendations(recs):
                     """,
                     unsafe_allow_html=True,
                 )
-
-# -----------------------------
-# Save conversation to DB
-def save_message(session_id, user_msg, assistant_msg):
-    conn = get_connection()
-    cur = conn.cursor()
-
-    query = """
-        INSERT INTO conversations (session_id, user_message, assistant_response)
-        VALUES (%s, %s, %s)
-    """
-
-    cur.execute(query, (session_id, user_msg, json.dumps(assistant_msg)))
-    conn.commit()
-
-    cur.close()
-    conn.close()
-# -----------------------------
 
 
 # -----------------------------
