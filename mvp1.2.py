@@ -5,22 +5,13 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
+import uuid
 
 load_dotenv()
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# -----------------------------
-# STREAMLIT SESSION MEMORY
-# -----------------------------
-if "conversation_memory" not in st.session_state:
-    st.session_state.conversation_memory = []
-
-if "recommended_restaurants" not in st.session_state:
-    st.session_state.recommended_restaurants = set()
+SIMILARITY_THRESHOLD = 0.65
 
 # -----------------------------
 # DB CONNECTION
@@ -35,12 +26,85 @@ def get_connection():
     )
 
 # -----------------------------
+# SESSION MANAGEMENT
+# -----------------------------
+def create_new_session():
+    session_id = str(uuid.uuid4())
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO chat_sessions (session_id, title) VALUES (%s, %s)",
+        (session_id, "New Chat")
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return session_id
+
+
+def get_all_sessions():
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT session_id, title FROM chat_sessions ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def load_conversation(session_id):
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("""
+        SELECT user_message, assistant_response
+        FROM conversations
+        WHERE session_id = %s
+        ORDER BY created_at
+    """, (session_id,))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [{"user": r["user_message"], "assistant": r["assistant_response"]} for r in rows]
+
+
+def save_message(session_id, user_msg, assistant_msg):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO conversations (session_id, user_message, assistant_response)
+        VALUES (%s, %s, %s)
+    """, (session_id, user_msg, json.dumps(assistant_msg)))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def update_session_title(session_id, user_query):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE chat_sessions
+        SET title = %s
+        WHERE session_id = %s
+        AND title = 'New Chat'
+    """, (user_query[:40], session_id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# -----------------------------
 # VECTOR SEARCH
 # -----------------------------
-def similarity_search(query_text, k=5):
-
+def similarity_search(query_text, k=8):
     embedding = client.embeddings.create(
-        model="text-embedding-3-small",
+        model="text-embedding-3-large",
         input=query_text
     ).data[0].embedding
 
@@ -50,13 +114,9 @@ def similarity_search(query_text, k=5):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     query = """
-        SELECT
-            rc.id,
-            rc.review_id,
-            rc.place_name,
-            rc.chunk_text,
-            COALESCE(photo_data.photos, '[]'::json) AS photos,
-            rc.embedding <=> %s::vector AS distance
+        SELECT rc.place_name, rc.chunk_text,
+               COALESCE(photo_data.photos, '[]'::json) AS photos,
+               rc.embedding <=> %s::vector AS distance
         FROM review_chunks rc
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
@@ -64,167 +124,113 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector < 0.6 
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
+    cur.execute(query, (embedding_str, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
     conn.close()
-
     return rows
 
-
 # -----------------------------
-# BUILD MEMORY CONTEXT
-# -----------------------------
-def build_memory_context():
-
-    memory = st.session_state.conversation_memory
-
-    if not memory:
-        return "No previous conversation."
-
-    text = ""
-
-    for turn in memory:
-        text += f"User: {turn['user']}\n"
-        text += f"Assistant: {json.dumps(turn['assistant'])}\n"
-
-    return text
-
-
-# -----------------------------
-# BUILD REVIEW CONTEXT
+# BUILD CONTEXT
 # -----------------------------
 def build_review_context(docs):
-
     context = ""
-
     for d in docs:
-
         photos = d.get("photos") or []
-        photo_links = []
-
-        if isinstance(photos, list):
-            for photo_item in photos:
-                link = photo_item.get("photo_link")
-                if link:
-                    photo_links.append(link)
-
-        photos_text = ", ".join(photo_links) if photo_links else "No photos"
+        links = [p.get("photo_link") for p in photos if p.get("photo_link")]
 
         context += f"""
 Restaurant: {d['place_name']}
 Review: {d['chunk_text']}
-Similarity Score: {round(d['distance'],4)}
-Photo Links: {photos_text}
+Photos: {", ".join(links) if links else "None"}
 """
-
-    return context
-
+    return context[:6000]
 
 # -----------------------------
-# MAIN RAG FUNCTION
+# RAG FUNCTION (UPGRADED)
 # -----------------------------
 def run_rag(user_query):
-    """
-    Main RAG function:
-    - Performs similarity search
-    - Returns recommendations or fallback if no relevant reviews
-    - Always appends the result to conversation memory
-    """
+    docs = similarity_search(user_query)
 
-    memory_context = build_memory_context()
-    docs = similarity_search(user_query, k=8)
+    # Python filtering
+    docs = [d for d in docs if d["distance"] < SIMILARITY_THRESHOLD]
 
-    # -----------------------------
-    # Fallback for irrelevant queries
-    # -----------------------------
+    fallback = [{
+        "restaurant": "",
+        "dish": "",
+        "description": "No relevant results found.",
+        "review_excerpt": "",
+        "why_this_was_selected": "",
+        "photos": []
+    }]
+
     if not docs:
-        fallback = [{
-            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-        }]
-
-        # Append to memory
+        save_message(st.session_state.session_id, user_query, fallback)
         st.session_state.conversation_memory.append({
             "user": user_query,
             "assistant": fallback
         })
-
         return fallback
 
-    # -----------------------------
-    # Build review context for LLM
-    # -----------------------------
     review_context = build_review_context(docs)
 
-    system_prompt = f"""
-You are a professional food critic.
-
-Using the review excerpts, generate THREE restaurant recommendations.
-
-Return ONLY valid JSON using this structure:
-
-[
-  {{
-    "restaurant": "restaurant name",
-    "dish": "specific dish mentioned in reviews",
-    "description": "short recommendation",
-    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
-    "why_this_was_selected": "brief explanation tying the user query to the review",
-    "photos": ["photo_url1", "photo_url2"]
-  }}
-]
-
-Previous conversation:
-{memory_context}
-
-Review excerpts:
-{review_context}
-
-**Important:**  
-- Only recommend restaurants if the reviews are clearly relevant to the user query.
-- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
-- Use only information from the review excerpts provided. Do NOT make up any details.
-- Provide your justification for selecting the review_excerpt.
-"""
-
-    # -----------------------------
-    # Call LLM
-    # -----------------------------
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # stable model for chat
+        model="gpt-4o-mini",
+        temperature=0.3,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "restaurant_recommendations",
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "restaurant": {"type": "string"},
+                            "dish": {"type": "string"},
+                            "description": {"type": "string"},
+                            "review_excerpt": {"type": "string"},
+                            "why_this_was_selected": {"type": "string"},
+                            "photos": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["restaurant", "description"]
+                    }
+                }
+            }
+        },
         messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
-        temperature=0.3
+            {
+                "role": "system",
+                "content": f"""
+You are a food recommendation engine.
+
+Use ONLY the provided reviews.
+
+Return up to 3 recommendations.
+
+If nothing is relevant, return an empty array.
+"""
+            },
+            {"role": "user", "content": review_context + "\n\nUser query: " + user_query}
+        ]
     )
 
-    answer = response.choices[0].message.content
+    parsed = json.loads(response.choices[0].message.content)
 
-    # -----------------------------
-    # Parse response safely
-    # -----------------------------
-    try:
-        parsed = json.loads(answer)
-    except:
-        parsed = [{
-            "restaurant": "",
-            "dish": "",
-            "description": "Error generating recommendations. Please try again.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
-            "photos": []
-        }]
+    if not parsed:
+        parsed = fallback
 
-    # -----------------------------
-    # Append to conversation memory
-    # -----------------------------
+    save_message(st.session_state.session_id, user_query, parsed)
+    update_session_title(st.session_state.session_id, user_query)
+
     st.session_state.conversation_memory.append({
         "user": user_query,
         "assistant": parsed
@@ -233,86 +239,61 @@ Review excerpts:
     return parsed
 
 # -----------------------------
-# RENDER RECOMMENDATIONS
+# STREAMLIT STATE
 # -----------------------------
-def render_recommendations(recs):
+if "session_id" not in st.session_state:
+    st.session_state.session_id = create_new_session()
 
-    for r in recs:
-
-        # Subheader logic for fallback
-        restaurant_name = r.get("restaurant")
-        if not restaurant_name:
-            restaurant_name = "No relevant restaurants"
-        st.subheader(restaurant_name)
-
-        dish = r.get("dish")
-        if dish:
-            st.write(f"**Recommended dish:** {dish}")
-
-        st.write(r.get("description", ""))
-
-        #review excerpt
-        excerpt = r.get("review_excerpt")
-        if excerpt:
-            st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
-
-        #explanation
-        why = r.get("why_this_was_selected")
-        if why:
-            st.caption(f"💡 Explanation: {why}")
-
-        photos = r.get("photos", [])
-
-        cols = st.columns(len(photos)) if photos else []
-
-        for i, photo in enumerate(photos):
-            with cols[i]:
-                st.markdown(
-                    f"""
-                    <img src=\"{photo}\" style=\"width: 100%; max-width: 400px; max-height: 400px; object-fit: cover; border-radius: 8px;\" />
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-
-# -----------------------------
-# STREAMLIT UI
-# -----------------------------
-st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
-
-st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
-st.write("Ask for restaurant recommendations based on real reviews.")
-
-if st.button("Clear history"):
+if "conversation_memory" not in st.session_state:
     st.session_state.conversation_memory = []
-    st.session_state.recommended_restaurants = set()
+
+# -----------------------------
+# SIDEBAR
+# -----------------------------
+st.sidebar.title("💬 Conversations")
+
+if st.sidebar.button("➕ New Chat"):
+    st.session_state.session_id = create_new_session()
+    st.session_state.conversation_memory = []
     st.rerun()
 
+sessions = get_all_sessions()
+
+for s in sessions:
+    label = s["title"]
+    if s["session_id"] == st.session_state.session_id:
+        label = f"👉 {label}"
+
+    if st.sidebar.button(label, key=s["session_id"]):
+        st.session_state.session_id = s["session_id"]
+        st.session_state.conversation_memory = load_conversation(s["session_id"])
+        st.rerun()
 
 # -----------------------------
-# DISPLAY CHAT HISTORY
+# UI
 # -----------------------------
+st.title("🍽️ FoodFinder")
+
 for msg in st.session_state.conversation_memory:
-
     with st.chat_message("user"):
         st.write(msg["user"])
 
     with st.chat_message("assistant"):
-        render_recommendations(msg["assistant"])
+        for r in msg["assistant"]:
+            name = r.get("restaurant") or "No relevant restaurants"
+            st.subheader(name)
+            st.write(r.get("description", ""))
 
-
-# -----------------------------
-# USER INPUT
-# -----------------------------
-user_query = st.chat_input("What kind of food or drink are you looking for?")
+user_query = st.chat_input("Ask for food recommendations")
 
 if user_query:
-
     with st.chat_message("user"):
         st.write(user_query)
 
-    with st.spinner("Analyzing reviews..."):
-        recs = run_rag(user_query)
+    recs = run_rag(user_query)
 
     with st.chat_message("assistant"):
-        render_recommendations(recs)
+        for r in recs:
+            name = r.get("restaurant") or "No relevant restaurants"
+            st.subheader(name)
+            st.write(r.get("description", ""))
