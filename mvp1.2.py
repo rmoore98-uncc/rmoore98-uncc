@@ -274,6 +274,24 @@ def render_recommendations(recs):
                     unsafe_allow_html=True,
                 )
 
+# -----------------------------
+# Save conversation to DB
+def save_message(session_id, user_msg, assistant_msg):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        INSERT INTO conversations (session_id, user_message, assistant_response)
+        VALUES (%s, %s, %s)
+    """
+
+    cur.execute(query, (session_id, user_msg, json.dumps(assistant_msg)))
+    conn.commit()
+
+    cur.close()
+    conn.close()
+# -----------------------------
+
 
 # -----------------------------
 # STREAMLIT UI
