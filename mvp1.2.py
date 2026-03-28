@@ -212,7 +212,6 @@ def run_rag(user_query):
 
 # ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
-    st.write("DEBUG docs_for_map:", docs_for_map)
 
 
     st.session_state.last_docs = docs_for_map
@@ -395,4 +394,10 @@ if user_query:
 
     with st.chat_message("assistant"):
         render_recommendations(recs)
+
+        if "last_docs" in st.session_state:
+            st.write("### Matched restaurant locations")
+    for d in st.session_state.last_docs:
+        st.write(f"**{d.get('place_name', 'Unknown')}**")
+        st.write(d.get("address", "No address found"))
 
