@@ -433,6 +433,9 @@ if user_query:
 
 # -----------------------------
 # Add Address Cards
+
+st.write("DEBUG last_docs:", st.session_state.get("last_docs"))
+
 if "last_docs" in st.session_state and st.session_state.last_docs:
     map_data = []
 
