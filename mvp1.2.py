@@ -255,7 +255,31 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 
     return enriched_recs
 
+# -----------------------------
+# Begin Answer Streamling Logic
+# -----------------------------
+def stream_llm_json(system_prompt, user_query, placeholder):
+    streamed_text = ""
 
+    stream = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.3,
+        stream=True,
+    )
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        content = delta.content if delta and delta.content else ""
+
+        if content:
+            streamed_text += content
+            placeholder.code(streamed_text, language="json")
+
+    return streamed_text
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
@@ -270,24 +294,15 @@ def run_rag(user_query):
     memory_context = build_memory_context()
     docs = similarity_search(user_query, k=8)
 
-# ✅ Use original docs for LLM (UNCHANGED)
     docs_for_llm = docs
-
-# ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
-
-
     st.session_state.last_docs = docs_for_map
 
-    # -----------------------------
-    # Fallback for irrelevant queries
-    # -----------------------------
     if not docs:
         fallback = [{
             "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
         }]
 
-        # Append to memory
         st.session_state.conversation_memory.append({
             "user": user_query,
             "assistant": fallback
@@ -295,9 +310,6 @@ def run_rag(user_query):
 
         return fallback
 
-    # -----------------------------
-    # Build review context for LLM
-    # -----------------------------
     review_context = build_review_context(docs)
 
     system_prompt = f"""
@@ -334,23 +346,10 @@ Review excerpts:
 - Provide your justification for selecting the review_excerpt.
 """
 
-    # -----------------------------
-    # Call LLM
-    # -----------------------------
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",  # stable model for chat
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
-        temperature=0.3
-    )
+    stream_placeholder = st.empty()
+    answer = stream_llm_json(system_prompt, user_query, stream_placeholder)
+    stream_placeholder.empty()
 
-    answer = response.choices[0].message.content
-
-    # -----------------------------
-    # Parse response safely
-    # -----------------------------
     try:
         parsed = json.loads(answer)
     except:
@@ -362,10 +361,9 @@ Review excerpts:
             "why_this_was_selected": "",
             "photos": []
         }]
+
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-    # -----------------------------
-    # Append to conversation memory
-    # -----------------------------
+
     st.session_state.conversation_memory.append({
         "user": user_query,
         "assistant": parsed
