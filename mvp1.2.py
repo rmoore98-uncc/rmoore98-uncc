@@ -56,6 +56,106 @@ def geocode_address(address):
     return None, None
 
 # -----------------------------
+# JSON Formatting Helpers
+import json
+import re
+
+def clean_json_text(text):
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    # Remove markdown code fences if present
+    text = re.sub(r"^```json\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    return text.strip()
+
+
+def extract_json_payload(text):
+    """
+    Try to extract the first JSON array or object from a model response.
+    Prioritize arrays since your app expects a list of recommendations.
+    """
+    text = clean_json_text(text)
+
+    # Prefer JSON array
+    array_match = re.search(r"\[.*\]", text, flags=re.DOTALL)
+    if array_match:
+        return array_match.group(0).strip()
+
+    # Fallback to JSON object
+    object_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if object_match:
+        return object_match.group(0).strip()
+
+    return text
+
+
+def normalize_recommendation(rec):
+    """
+    Ensure every recommendation has the fields your UI expects.
+    """
+    return {
+        "restaurant": rec.get("restaurant", "") if isinstance(rec, dict) else "",
+        "dish": rec.get("dish", "") if isinstance(rec, dict) else "",
+        "description": rec.get("description", "") if isinstance(rec, dict) else "",
+        "review_excerpt": rec.get("review_excerpt", "") if isinstance(rec, dict) else "",
+        "why_this_was_selected": rec.get("why_this_was_selected", "") if isinstance(rec, dict) else "",
+        "photos": rec.get("photos", []) if isinstance(rec, dict) and isinstance(rec.get("photos", []), list) else []
+    }
+
+
+def parse_recommendations(answer):
+    """
+    Robust JSON parsing for model output.
+    Returns (parsed_output, json_valid)
+    """
+    if not answer or not isinstance(answer, str):
+        return [{
+            "restaurant": "",
+            "dish": "",
+            "description": "I couldn't format the recommendations this time. Please try again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }], False
+
+    # Attempt 1: direct parse
+    try:
+        parsed = json.loads(answer)
+    except Exception:
+        parsed = None
+
+    # Attempt 2: extract likely JSON payload
+    if parsed is None:
+        try:
+            extracted = extract_json_payload(answer)
+            parsed = json.loads(extracted)
+        except Exception:
+            parsed = None
+
+    # Attempt 3: if model returned a single object, wrap it in a list
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+
+    # Validate final structure
+    if isinstance(parsed, list):
+        normalized = [normalize_recommendation(rec) for rec in parsed]
+        return normalized, True
+
+    return [{
+        "restaurant": "",
+        "dish": "",
+        "description": "I couldn't format the recommendations this time. Please try again.",
+        "review_excerpt": "",
+        "why_this_was_selected": "",
+        "photos": []
+    }], False
+
+# -----------------------------
 # STREAMLIT SESSION MEMORY
 # -----------------------------
 if "conversation_memory" not in st.session_state:
@@ -440,18 +540,7 @@ Review excerpts:
     # -----------------------------
     # Parse response safely
     # -----------------------------
-    json_valid = True
-    try:
-        parsed = json.loads(answer)
-    except:
-        parsed = [{
-            "restaurant": "",
-            "dish": "",
-            "description": "Error generating recommendations. Please try again.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
-            "photos": []
-        }]
+    parsed, json_valid = parse_recommendations(answer)
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
     metric_row = {
         "user_query": user_query,
