@@ -68,29 +68,39 @@ def similarity_search(query_text, k=5):
 
     query = """
         SELECT
-        rc.id,
-        rc.review_id,
-        rc.place_name,
-        rc.chunk_text,
-        p.address,
-        COALESCE(photo_data.photos, '[]'::json) AS photos,
-        rc.embedding <=> %s::vector AS distance
-    FROM review_chunks rc
-    LEFT JOIN place_table p 
-        ON rc.place_id = p.place_id
-    LEFT JOIN LATERAL (
-        SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
-        FROM review_photos rp
-        WHERE rp.review_id = rc.review_id
-    ) photo_data ON TRUE
-    WHERE rc.embedding IS NOT NULL
-    AND rc.embedding <=> %s::vector < 0.6 
-    ORDER BY rc.embedding <=> %s::vector
-    LIMIT %s
+            rc.id,
+            rc.review_id,
+            rc.place_name,
+            rc.chunk_text,
+            COALESCE(photo_data.photos, '[]'::json) AS photos,
+            rc.embedding <=> %s::vector AS distance
+        FROM review_chunks rc
+        LEFT JOIN LATERAL (
+            SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
+            FROM review_photos rp
+            WHERE rp.review_id = rc.review_id
+        ) photo_data ON TRUE
+        WHERE rc.embedding IS NOT NULL
+        AND rc.embedding <=> %s::vector < 0.6 
+        ORDER BY rc.embedding <=> %s::vector
+        LIMIT %s
     """
 
     cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
+
+    place_ids = list(set([row["place_id"] for row in rows if row["place_id"]]))
+
+    cur.execute("""
+    SELECT place_id, address
+    FROM place_table
+    WHERE place_id = ANY(%s)
+""", (place_ids,))
+
+    address_map = {r["place_id"]: r["address"] for r in cur.fetchall()}
+
+    for row in rows:
+        row["address"] = address_map.get(row["place_id"])
 
     cur.close()
     conn.close()
@@ -98,6 +108,10 @@ def similarity_search(query_text, k=5):
     return rows
 
 # ------------------------------
+
+# -----------------
+# Enrich Query Results with Address
+
 
 # -----------------------------
 # BUILD MEMORY CONTEXT
@@ -337,3 +351,4 @@ if user_query:
 
     with st.chat_message("assistant"):
         render_recommendations(recs)
+
