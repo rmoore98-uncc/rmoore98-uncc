@@ -374,8 +374,18 @@ Review excerpts:
     return parsed
 # -----------------------------
 # -- RENDER SMALL MAP FOR EACH RECOMMENDATION --
-def render_small_map(lat, lon):
-    df = pd.DataFrame([{"lat": lat, "lon": lon}])
+def render_small_map(lat, lon, restaurant_name="Restaurant"):
+    df = pd.DataFrame([{
+        "lat": lat,
+        "lon": lon,
+        "name": restaurant_name,
+        "icon_data": {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/e/ec/RedDot.svg",
+            "width": 128,
+            "height": 128,
+            "anchorY": 64,
+        }
+    }])
 
     st.pydeck_chart(
         pdk.Deck(
@@ -383,23 +393,21 @@ def render_small_map(lat, lon):
             initial_view_state=pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
-                zoom=15,
+                zoom=16,
                 pitch=0,
             ),
             layers=[
                 pdk.Layer(
-                    "ScatterplotLayer",
+                    "IconLayer",
                     data=df,
-                    get_position='[lon, lat]',
-                    get_radius=120,
-                    get_fill_color=[255, 0, 0, 200],
-                    stroked=True,
-                    get_line_color=[0, 0, 0, 200],
-                    line_width_min_pixels=1,
+                    get_icon="icon_data",
+                    get_size=24,
+                    size_scale=4,
+                    get_position="[lon, lat]",
                     pickable=True,
-                    auto_highlight=True,)
+                )
             ],
-            tooltip={"text": "Restaurant location"},
+            tooltip={"text": "{name}"},
         ),
         height=180,
     )
@@ -452,7 +460,7 @@ def render_recommendations(recs):
 
         if lat is not None and lon is not None:
             st.write("📍 Location")
-            render_small_map(lat, lon)
+            render_small_map(lat, lon, restaurant_name=restaurant_name)
         else:
             st.caption("Map not available for this restaurant.")
 
