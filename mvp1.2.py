@@ -9,6 +9,7 @@ from geopy.geocoders import Nominatim
 from functools import lru_cache
 import pandas as pd
 import re
+import pydeck as pdk
 
 load_dotenv()
 
@@ -372,6 +373,33 @@ Review excerpts:
 
     return parsed
 # -----------------------------
+# -- RENDER SMALL MAP FOR EACH RECOMMENDATION --
+def render_small_map(lat, lon):
+    df = pd.DataFrame([{"lat": lat, "lon": lon}])
+
+    st.pydeck_chart(
+        pdk.Deck(
+            map_style="mapbox://styles/mapbox/streets-v11",
+            initial_view_state=pdk.ViewState(
+                latitude=lat,
+                longitude=lon,
+                zoom=15,
+                pitch=0,
+            ),
+            layers=[
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=df,
+                    get_position='[lon, lat]',
+                    get_radius=35,
+                    pickable=True,
+                )
+            ],
+            tooltip={"text": "Restaurant location"},
+        ),
+        height=220,
+    )
+# -----------------------------
 # RENDER RECOMMENDATIONS
 # -----------------------------
 def render_recommendations(recs):
@@ -423,8 +451,7 @@ def render_recommendations(recs):
 
     if lat is not None and lon is not None:
         st.write("📍 Location")
-        map_df = pd.DataFrame([{"lat": lat, "lon": lon}])
-        st.map(map_df)
+        render_small_map(lat, lon)
     else:
         st.caption("Map not available for this restaurant.")
 
