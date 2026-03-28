@@ -211,7 +211,7 @@ def run_rag(user_query):
 
 # ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
-    st.write("DEBUG docs_for_map:", docs_for_map)
+    st.write("DEBUG raw docs:", docs)
 
 
     st.session_state.last_docs = docs_for_map
