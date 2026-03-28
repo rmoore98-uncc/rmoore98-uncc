@@ -395,6 +395,15 @@ def render_recommendations(recs):
             st.write(f"**Address:** {address}")
         else:
             st.write("**Address:** Not available")
+            lat = r.get("latitude")
+            lon = r.get("longitude")
+
+        if lat is not None and lon is not None:
+            st.write("📍 Location")
+            map_df = pd.DataFrame([{"lat": lat, "lon": lon}])
+            st.map(map_df)
+        else:
+            st.caption("Map not available for this restaurant.")
 
         #review excerpt
         excerpt = r.get("review_excerpt")
@@ -426,8 +435,6 @@ def render_recommendations(recs):
 st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
 
 st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
-test_lat, test_lon = geocode_address("Charlotte, NC, USA")
-st.write("Test geocode Charlotte:", test_lat, test_lon)
 st.write("Ask for restaurant recommendations based on real reviews.")
 
 if st.button("Clear history"):
@@ -464,25 +471,4 @@ if user_query:
     with st.chat_message("assistant"):
         render_recommendations(recs)
 
-# -----------------------------
-# Add Address Cards
 
-if "last_docs" in st.session_state and st.session_state.last_docs:
-    map_data = []
-
-    for d in st.session_state.last_docs:
-        lat = d.get("latitude")
-        lon = d.get("longitude")
-
-        if lat is not None and lon is not None:
-            map_data.append({
-                "lat": lat,
-                "lon": lon,
-                "place_name": d.get("place_name"),
-                "address": d.get("address"),
-            })
-
-    if map_data:
-        st.write("### Map of matched restaurants")
-        df = pd.DataFrame(map_data)
-        st.map(df)
