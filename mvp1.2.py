@@ -388,27 +388,7 @@ def render_recommendations(recs):
                     unsafe_allow_html=True,
                 )
 
-# -----------------------------
-# Add Address Cards
-if "last_docs" in st.session_state and st.session_state.last_docs:
-    map_data = []
 
-    for d in st.session_state.last_docs:
-        lat = d.get("latitude")
-        lon = d.get("longitude")
-
-        if lat is not None and lon is not None:
-            map_data.append({
-                "lat": lat,
-                "lon": lon,
-                "place_name": d.get("place_name"),
-                "address": d.get("address"),
-            })
-
-    if map_data:
-        st.write("### Map of matched restaurants")
-        df = pd.DataFrame(map_data)
-        st.map(df)
 # -----------------------------
 # STREAMLIT UI
 # -----------------------------
@@ -451,3 +431,24 @@ if user_query:
     with st.chat_message("assistant"):
         render_recommendations(recs)
 
+# -----------------------------
+# Add Address Cards
+if "last_docs" in st.session_state and st.session_state.last_docs:
+    map_data = []
+
+    for d in st.session_state.last_docs:
+        lat = d.get("latitude")
+        lon = d.get("longitude")
+
+        if lat is not None and lon is not None:
+            map_data.append({
+                "lat": lat,
+                "lon": lon,
+                "place_name": d.get("place_name"),
+                "address": d.get("address"),
+            })
+
+    if map_data:
+        st.write("### Map of matched restaurants")
+        df = pd.DataFrame(map_data)
+        st.map(df)
