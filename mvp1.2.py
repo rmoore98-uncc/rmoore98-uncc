@@ -88,19 +88,39 @@ def similarity_search(query_text, k=5):
 
     cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
+    # -----------------------------
+# Fetch addresses separately
+# -----------------------------
+    place_ids = list(set([
+    row["place_id"] for row in rows if row.get("place_id")
+]))
 
-    place_ids = list(set([row["place_id"] for row in rows if row["place_id"]]))
+    address_map = {}
 
-    cur.execute("""
-    SELECT place_id, address
-    FROM place_table
-    WHERE place_id = ANY(%s)
-""", (place_ids,))
+    if place_ids:
+        cur.execute("""
+        SELECT place_id, address
+        FROM place_table
+        WHERE place_id = ANY(%s)
+    """, (place_ids,))
 
-    address_map = {r["place_id"]: r["address"] for r in cur.fetchall()}
+    results = cur.fetchall()
+    address_map = {
+        r["place_id"]: r["address"]
+        for r in results
+    }
+
+# -----------------------------
+# Merge address into rows
+# -----------------------------
+    for row in rows:
+        row["address"] = address_map.get(row.get("place_id"))
 
     for row in rows:
-        row["address"] = address_map.get(row["place_id"])
+        address = row.get("address")
+    lat, lon = geocode_address(address) if address else (None, None)
+    row["latitude"] = lat
+    row["longitude"] = lon
 
     cur.close()
     conn.close()
