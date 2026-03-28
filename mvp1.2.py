@@ -222,6 +222,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 
     return enriched_recs
 
+
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
@@ -328,7 +329,8 @@ Review excerpts:
             "why_this_was_selected": "",
             "photos": []
         }]
-
+    parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    st.write("DEBUG parsed with address:", parsed)
     # -----------------------------
     # Append to conversation memory
     # -----------------------------
@@ -338,7 +340,6 @@ Review excerpts:
     })
 
     return parsed
-
 # -----------------------------
 # RENDER RECOMMENDATIONS
 # -----------------------------
@@ -423,3 +424,4 @@ if user_query:
 
     with st.chat_message("assistant"):
         render_recommendations(recs)
+
