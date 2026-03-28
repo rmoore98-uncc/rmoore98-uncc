@@ -88,39 +88,6 @@ def similarity_search(query_text, k=5):
 
     cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
-    # -----------------------------
-# Fetch addresses separately
-# -----------------------------
-    place_ids = list(set([
-    row["place_id"] for row in rows if row.get("place_id")
-]))
-
-    address_map = {}
-
-    if place_ids:
-        cur.execute("""
-        SELECT place_id, address
-        FROM place_table
-        WHERE place_id = ANY(%s)
-    """, (place_ids,))
-
-    results = cur.fetchall()
-    address_map = {
-        r["place_id"]: r["address"]
-        for r in results
-    }
-
-# -----------------------------
-# Merge address into rows
-# -----------------------------
-    for row in rows:
-        row["address"] = address_map.get(row.get("place_id"))
-
-    for row in rows:
-        address = row.get("address")
-    lat, lon = geocode_address(address) if address else (None, None)
-    row["latitude"] = lat
-    row["longitude"] = lon
 
     cur.close()
     conn.close()
@@ -131,7 +98,50 @@ def similarity_search(query_text, k=5):
 
 # -----------------
 # Enrich Query Results with Address
+def enrich_with_location(rows):
 
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    place_ids = list(set([
+        row["place_id"] for row in rows if row.get("place_id")
+    ]))
+
+    address_map = {}
+
+    if place_ids:
+        cur.execute("""
+            SELECT place_id, address
+            FROM place_table
+            WHERE place_id = ANY(%s)
+        """, (place_ids,))
+
+        address_map = {
+            r["place_id"]: r["address"]
+            for r in cur.fetchall()
+        }
+
+    cur.close()
+    conn.close()
+
+    # ⚠️ IMPORTANT: create a NEW list (don’t mutate original)
+    enriched = []
+
+    for row in rows:
+        new_row = dict(row)  # copy
+
+        address = address_map.get(row.get("place_id"))
+        new_row["address"] = address
+
+        # optional geocoding
+        if address:
+            lat, lon = geocode_address(address)
+            new_row["latitude"] = lat
+            new_row["longitude"] = lon
+
+        enriched.append(new_row)
+
+    return enriched
 
 # -----------------------------
 # BUILD MEMORY CONTEXT
@@ -195,6 +205,14 @@ def run_rag(user_query):
 
     memory_context = build_memory_context()
     docs = similarity_search(user_query, k=8)
+
+# ✅ Use original docs for LLM (UNCHANGED)
+    docs_for_llm = docs
+
+# ✅ Use enriched docs for map/UI
+    docs_for_map = enrich_with_location(docs)
+
+    st.session_state.last_docs = docs_for_map
 
     # -----------------------------
     # Fallback for irrelevant queries
