@@ -390,22 +390,6 @@ def render_recommendations(recs):
 
         st.write(r.get("description", ""))
 
-        address = r.get("address")
-        if address:
-            st.write(f"**Address:** {address}")
-    else:
-        st.write("**Address:** Not available")
-
-        lat = r.get("latitude")
-        lon = r.get("longitude")
-
-    if lat is not None and lon is not None:
-        st.write("📍 Location")
-        map_df = pd.DataFrame([{"lat": lat, "lon": lon}])
-        st.map(map_df)
-    else:
-        st.caption("Map not available for this restaurant.")
-
         #review excerpt
         excerpt = r.get("review_excerpt")
         if excerpt:
@@ -428,6 +412,21 @@ def render_recommendations(recs):
                     """,
                     unsafe_allow_html=True,
                 )
+        address = r.get("address")
+        if address:
+            st.write(f"**Address:** {address}")
+    else:
+        st.write("**Address:** Not available")
+
+        lat = r.get("latitude")
+        lon = r.get("longitude")
+
+    if lat is not None and lon is not None:
+        st.write("📍 Location")
+        map_df = pd.DataFrame([{"lat": lat, "lon": lon}])
+        st.map(map_df)
+    else:
+        st.caption("Map not available for this restaurant.")
 
 
 # -----------------------------
