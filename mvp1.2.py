@@ -67,9 +67,10 @@ def similarity_search(query_text, k=5):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     query = """
-        SELECT
+        SELECT DISTINCT ON (rc.place_name)
             rc.id,
             rc.review_id,
+            rc.place_id,
             rc.place_name,
             rc.chunk_text,
             COALESCE(photo_data.photos, '[]'::json) AS photos,
@@ -81,8 +82,8 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector < 0.8 
-        ORDER BY rc.embedding <=> %s::vector
+          AND rc.embedding <=> %s::vector < 0.8
+        ORDER BY rc.place_name, rc.embedding <=> %s::vector
         LIMIT %s
     """
 
@@ -238,7 +239,10 @@ def run_rag(user_query):
     system_prompt = f"""
 You are a professional food critic.
 
-Using the review excerpts, generate THREE restaurant recommendations.
+Generate up to THREE restaurant recommendations based on the review excerpts provided.
+
+Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
+If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
 
 Return ONLY valid JSON using this structure:
 
