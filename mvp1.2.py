@@ -362,6 +362,8 @@ def render_recommendations(recs):
         address = r.get("address")
         if address:
             st.write(f"**Address:** {address}")
+        else:
+            st.write("**Address:** Not available")
 
         #review excerpt
         excerpt = r.get("review_excerpt")
