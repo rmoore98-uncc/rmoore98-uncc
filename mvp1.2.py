@@ -136,10 +136,17 @@ def enrich_with_location(rows):
         new_row["address"] = address
 
         # optional geocoding
+        new_row["latitude"] = None
+        new_row["longitude"] = None
+
         if address:
+            st.write("DEBUG geocoding address:", repr(address))
             lat, lon = geocode_address(address)
-            new_row["latitude"] = lat
-            new_row["longitude"] = lon
+            st.write("DEBUG geocode result:", lat, lon)
+
+
+        new_row["latitude"] = lat
+        new_row["longitude"] = lon
 
         enriched.append(new_row)
 
@@ -433,8 +440,6 @@ if user_query:
 
 # -----------------------------
 # Add Address Cards
-
-st.write("DEBUG last_docs:", st.session_state.get("last_docs"))
 
 if "last_docs" in st.session_state and st.session_state.last_docs:
     map_data = []
