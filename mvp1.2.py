@@ -72,6 +72,7 @@ def similarity_search(query_text, k=20):
             rc.review_id,
             rc.place_name,
             rc.chunk_text,
+            rc.place_id,
             COALESCE(photo_data.photos, '[]'::json) AS photos,
             rc.embedding <=> %s::vector AS distance
         FROM review_chunks rc
@@ -211,7 +212,7 @@ def run_rag(user_query):
 
 # ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
-    st.write("DEBUG raw docs:", docs)
+    st.write("DEBUG docs_for_map:", docs_for_map)
 
 
     st.session_state.last_docs = docs_for_map
