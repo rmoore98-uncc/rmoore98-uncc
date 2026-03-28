@@ -402,6 +402,8 @@ def render_recommendations(recs):
 st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
 
 st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
+test_lat, test_lon = geocode_address("Charlotte, NC, USA")
+st.write("Test geocode Charlotte:", test_lat, test_lon)
 st.write("Ask for restaurant recommendations based on real reviews.")
 
 if st.button("Clear history"):
