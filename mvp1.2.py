@@ -89,34 +89,32 @@ def insert_evaluation_metric(metric_row):
 
         query = """
             INSERT INTO evaluation_metrics (
-    user_query,
-    retrieved_doc_count,
-    avg_distance,
-    retrieval_time_ms,
-    generation_time_ms,
-    embedding_input_tokens,
-    llm_input_tokens,
-    llm_output_tokens,
-    llm_total_tokens,
-    json_valid,
-    fallback_used,
-    raw_output
-)
+                user_query,
+                retrieved_doc_count,
+                avg_distance,
+                retrieval_time_ms,
+                generation_time_ms,
+                embedding_input_tokens,
+                llm_input_tokens,
+                llm_output_tokens,
+                llm_total_tokens,
+                json_valid,
+                fallback_used,
+                raw_output
+            )
             VALUES (
-                VALUES (
-    %(user_query)s,
-    %(retrieved_doc_count)s,
-    %(avg_distance)s,
-    %(retrieval_time_ms)s,
-    %(generation_time_ms)s,
-    %(embedding_input_tokens)s,
-    %(llm_input_tokens)s,
-    %(llm_output_tokens)s,
-    %(llm_total_tokens)s,
-    %(json_valid)s,
-    %(fallback_used)s,
-    %(raw_output)s::jsonb
-)
+                %(user_query)s,
+                %(retrieved_doc_count)s,
+                %(avg_distance)s,
+                %(retrieval_time_ms)s,
+                %(generation_time_ms)s,
+                %(embedding_input_tokens)s,
+                %(llm_input_tokens)s,
+                %(llm_output_tokens)s,
+                %(llm_total_tokens)s,
+                %(json_valid)s,
+                %(fallback_used)s,
+                %(raw_output)s::jsonb
             )
         """
 
@@ -142,7 +140,7 @@ def similarity_search(query_text, k=20):
     )
 
     embedding = embedding_response.data[0].embedding
-    embedding_tokens = getattr(embedding_response.usage, "total_tokens", None)
+    embedding_input_tokens = getattr(embedding_response.usage, "total_tokens", None)
 
     embedding_str = "[" + ",".join(map(str, embedding)) + "]"
 
@@ -176,7 +174,7 @@ def similarity_search(query_text, k=20):
     cur.close()
     conn.close()
 
-    return rows, embedding_tokens
+    return rows, embedding_input_tokens
 # ------------------------------
 
 # -----------------
@@ -329,11 +327,11 @@ def run_rag(user_query):
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-    docs = similarity_search(user_query, k=8)
+    docs, embedding_input_tokens = similarity_search(user_query, k=8)
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     memory_context = build_memory_context()
-    docs, embedding_input_tokens = similarity_search(user_query, k=8)
+    docs = similarity_search(user_query, k=8)
 
 # ✅ Use original docs for LLM (UNCHANGED)
     docs_for_llm = docs
@@ -346,6 +344,10 @@ def run_rag(user_query):
 
     distances = [d["distance"] for d in docs if d.get("distance") is not None]
     avg_distance = sum(distances) / len(distances) if distances else None
+
+    llm_input_tokens = 0
+    llm_output_tokens = 0
+    llm_total_tokens = 0
 
     # -----------------------------
     # Fallback for irrelevant queries
@@ -361,6 +363,10 @@ def run_rag(user_query):
             "avg_distance": None,
             "retrieval_time_ms": retrieval_time_ms,
             "generation_time_ms": 0,
+            "embedding_input_tokens": embedding_input_tokens,
+            "llm_input_tokens": llm_input_tokens,
+            "llm_output_tokens": llm_output_tokens,
+            "llm_total_tokens": llm_total_tokens,
             "json_valid": True,
             "fallback_used": True,
             "raw_output": json.dumps(fallback)
@@ -426,11 +432,12 @@ Review excerpts:
         ],
         temperature=0.3
     )
+    generation_time_ms = int((time.time() - generation_start) * 1000)
     usage = response.usage
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
-    generation_time_ms = int((time.time() - generation_start) * 1000)
+
     answer = response.choices[0].message.content
 
     # -----------------------------
@@ -450,19 +457,19 @@ Review excerpts:
         }]
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
     metric_row = {
-    "user_query": user_query,
-    "retrieved_doc_count": 0,
-    "avg_distance": None,
-    "retrieval_time_ms": retrieval_time_ms,
-    "generation_time_ms": 0,
-    "embedding_input_tokens": embedding_input_tokens,
-    "llm_input_tokens": 0,
-    "llm_output_tokens": 0,
-    "llm_total_tokens": 0,
-    "json_valid": True,
-    "fallback_used": True,
-    "raw_output": json.dumps(fallback)
-}
+        "user_query": user_query,
+        "retrieved_doc_count": len(docs),
+        "avg_distance": avg_distance,
+        "retrieval_time_ms": retrieval_time_ms,
+        "generation_time_ms": generation_time_ms,
+        "embedding_input_tokens": embedding_input_tokens,
+        "llm_input_tokens": llm_input_tokens,
+        "llm_output_tokens": llm_output_tokens,
+        "llm_total_tokens": llm_total_tokens,
+        "json_valid": json_valid,
+        "fallback_used": False,
+        "raw_output": json.dumps(parsed)
+    }
     insert_evaluation_metric(metric_row)
     # -----------------------------
     # Append to conversation memory
