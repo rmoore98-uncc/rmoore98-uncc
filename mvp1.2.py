@@ -258,6 +258,30 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # -----------------------------
 # Begin Answer Streamling Logic
 # -----------------------------
+def stream_llm_json_text(system_prompt, user_query, placeholder):
+    streamed_text = ""
+
+    stream = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.3,
+        stream=True,
+    )
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        content = delta.content if delta and delta.content else ""
+
+        if content:
+            streamed_text += content
+            placeholder.markdown(streamed_text)
+
+    return streamed_text
+# -----------------------------
+# Plain Text Streaming
 def stream_plaintext_answer(system_prompt, user_query, placeholder):
     streamed_text = ""
 
@@ -294,13 +318,12 @@ def run_rag(user_query):
     memory_context = build_memory_context()
     docs = similarity_search(user_query, k=8)
 
-    docs_for_llm = docs
     docs_for_map = enrich_with_location(docs)
     st.session_state.last_docs = docs_for_map
 
     if not docs:
         fallback = [{
-            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+            "description": "There are no relevant reviews based on your input."
         }]
 
         st.session_state.conversation_memory.append({
@@ -312,57 +335,94 @@ def run_rag(user_query):
 
     review_context = build_review_context(docs)
 
+    # -----------------------------
+    # 1. STREAM HUMAN-FRIENDLY TEXT
+    # -----------------------------
+    text_prompt = f"""
+You are a helpful food assistant.
+
+Write a short, engaging recommendation using these reviews.
+
+Do NOT return JSON.
+Write naturally like a human.
+
+User query:
+{user_query}
+
+Reviews:
+{review_context}
+"""
+
+    stream_placeholder = st.empty()
+    stream_plaintext_answer(text_prompt, user_query, stream_placeholder)
+    stream_placeholder.empty()
+
+    # -----------------------------
+    # 2. STRUCTURED JSON (NON-STREAM)
+    # -----------------------------
     system_prompt = f"""
 You are a professional food critic.
 
-Generate up to THREE restaurant recommendations based on the review excerpts provided.
+Generate up to THREE restaurant recommendations.
 
-Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
-If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
-
-Return ONLY valid JSON using this structure:
+Return ONLY valid JSON:
 
 [
   {{
     "restaurant": "restaurant name",
-    "dish": "specific dish mentioned in reviews",
+    "dish": "specific dish",
     "description": "short recommendation",
-    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
-    "why_this_was_selected": "brief explanation tying the user query to the review",
+    "review_excerpt": "quote",
+    "why_this_was_selected": "reason",
     "photos": ["photo_url1", "photo_url2"]
   }}
 ]
 
-Previous conversation:
-{memory_context}
+Use ONLY the provided reviews.
 
-Review excerpts:
+Reviews:
 {review_context}
-
-**Important:**  
-- Only recommend restaurants if the reviews are clearly relevant to the user query.
-- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
-- Use only information from the review excerpts provided. Do NOT make up any details.
-- Provide your justification for selecting the review_excerpt.
 """
 
-    stream_placeholder = st.empty()
-    answer = stream_plaintext_answer(system_prompt, user_query, stream_placeholder)
-    stream_placeholder.empty()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.3
+    )
+
+    answer = response.choices[0].message.content
 
     try:
         parsed = json.loads(answer)
     except:
         parsed = [{
             "restaurant": "",
-            "dish": "",
-            "description": "Error generating recommendations. Please try again.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
+            "description": "Error generating recommendations.",
             "photos": []
         }]
 
+    # -----------------------------
+    # Attach addresses + coords
+    # -----------------------------
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+
+    # -----------------------------
+    # Attach photos from source if missing
+    # -----------------------------
+    for rec in parsed:
+        if not rec.get("photos"):
+
+            for d in docs_for_map:
+                    photos = d.get("photos", [])
+                    rec["photos"] = [
+                        p.get("photo_link")
+                        for p in photos
+                        if p.get("photo_link")
+                    ]
+                    break
 
     st.session_state.conversation_memory.append({
         "user": user_query,
