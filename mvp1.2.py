@@ -5,6 +5,8 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
+from geopy.geocoders import Nominatim
+from functools import lru_cache
 
 load_dotenv()
 
@@ -12,6 +14,21 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# -----------------------------
+# GEOCODING (Address → Lat/Lon)
+# -----------------------------
+geolocator = Nominatim(user_agent="foodfinder_app")
+
+@lru_cache(maxsize=1000)
+def geocode_address(address):
+    try:
+        location = geolocator.geocode(address)
+        if location:
+            return location.latitude, location.longitude
+    except Exception as e:
+        print("Geocoding error:", e)
+    return None, None
 
 # -----------------------------
 # STREAMLIT SESSION MEMORY
@@ -80,6 +97,7 @@ def similarity_search(query_text, k=5):
 
     return rows
 
+# ------------------------------
 
 # -----------------------------
 # BUILD MEMORY CONTEXT
