@@ -258,7 +258,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # -----------------------------
 # Begin Answer Streamling Logic
 # -----------------------------
-def stream_llm_json(system_prompt, user_query, placeholder):
+def stream_llm_json_text(system_prompt, user_query, placeholder):
     streamed_text = ""
 
     stream = client.chat.completions.create(
@@ -277,7 +277,7 @@ def stream_llm_json(system_prompt, user_query, placeholder):
 
         if content:
             streamed_text += content
-            placeholder.code(streamed_text, language="json")
+            placeholder.markdown(streamed_text)
 
     return streamed_text
 # -----------------------------
@@ -347,7 +347,7 @@ Review excerpts:
 """
 
     stream_placeholder = st.empty()
-    answer = stream_llm_json(system_prompt, user_query, stream_placeholder)
+    answer = stream_llm_json_text(system_prompt, user_query, stream_placeholder)
     stream_placeholder.empty()
 
     try:
