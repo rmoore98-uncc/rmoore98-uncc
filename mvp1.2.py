@@ -192,6 +192,35 @@ Photo Links: {photos_text}
 
     return context
 
+# -----------------------------
+# Attach Addresses to Recommendations for Map/UI
+def attach_addresses_to_recommendations(recommendations, docs_for_map):
+    address_lookup = {}
+
+    for d in docs_for_map:
+        place_name = d.get("place_name")
+        if place_name:
+            address_lookup[place_name.strip().lower()] = {
+                "address": d.get("address"),
+                "latitude": d.get("latitude"),
+                "longitude": d.get("longitude"),
+            }
+
+    enriched_recs = []
+
+    for rec in recommendations:
+        new_rec = dict(rec)
+        restaurant = rec.get("restaurant", "")
+        key = restaurant.strip().lower()
+
+        location_data = address_lookup.get(key, {})
+        new_rec["address"] = location_data.get("address")
+        new_rec["latitude"] = location_data.get("latitude")
+        new_rec["longitude"] = location_data.get("longitude")
+
+        enriched_recs.append(new_rec)
+
+    return enriched_recs
 
 # -----------------------------
 # MAIN RAG FUNCTION
@@ -394,10 +423,3 @@ if user_query:
 
     with st.chat_message("assistant"):
         render_recommendations(recs)
-
-        if "last_docs" in st.session_state:
-            st.write("### Matched restaurant locations")
-    for d in st.session_state.last_docs:
-        st.write(f"**{d.get('place_name', 'Unknown')}**")
-        st.write(d.get("address", "No address found"))
-
