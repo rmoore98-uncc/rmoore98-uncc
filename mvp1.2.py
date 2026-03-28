@@ -8,6 +8,7 @@ import json
 from geopy.geocoders import Nominatim
 from functools import lru_cache
 import pandas as pd
+import re
 
 load_dotenv()
 
@@ -19,7 +20,28 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # -----------------------------
 # GEOCODING (Address → Lat/Lon)
 # -----------------------------
-geolocator = Nominatim(user_agent="foodfinder_app")
+geolocator = Nominatim(user_agent="foodfinder_app", timeout=10)
+
+# -----------------------------
+# ADDRESS NORMALIZATION FOR BETTER GEOCODING
+# -----------------------------
+def normalize_address_for_geocoding(address):
+    # Remove suite/apartment info for better geocoding
+    patterns = [
+        r",?\s*Suite\s*\d+\w*",  # Suite 100, Suite 100A
+        r",?\s*Apt\s*\d+\w*",    # Apt 5, Apt 5B
+        r",?\s*Apartment\s*\d+\w*",  # Apartment 3, Apartment 3C
+        r",?\s*Unit\s*\d+\w*",   # Unit 4, Unit 4D
+    ]
+    for pattern in patterns:
+        address = re.sub(pattern, "", address, flags=re.IGNORECASE)
+    return address.strip()
+
+def strip_suite(address):
+    if not address:
+        return ""
+    return re.sub(r',?\s*(Suite|Ste|Unit)\s+\w+', '', address, flags=re.IGNORECASE)
+#-----------------------------    
 
 @lru_cache(maxsize=1000)
 def geocode_address(address):
@@ -140,10 +162,12 @@ def enrich_with_location(rows):
         new_row["longitude"] = None
 
         if address:
-            st.write("DEBUG geocoding address:", repr(address))
-            lat, lon = geocode_address(address)
-            st.write("DEBUG geocode result:", lat, lon)
+            normalized_address = normalize_address_for_geocoding(address)
+            lat, lon = geocode_address(normalized_address)
 
+        if lat is None or lon is None:
+            fallback_address = strip_suite(normalized_address)
+            lat, lon = geocode_address(fallback_address)
 
         new_row["latitude"] = lat
         new_row["longitude"] = lon
