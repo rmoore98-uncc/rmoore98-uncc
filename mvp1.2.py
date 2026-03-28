@@ -10,6 +10,7 @@ from functools import lru_cache
 import pandas as pd
 import re
 import pydeck as pdk
+import time
 
 load_dotenv()
 
@@ -76,9 +77,56 @@ def get_connection():
     )
 
 # -----------------------------
+# EVALUATION METRICS LOGGING
+# -----------------------------
+def insert_evaluation_metric(metric_row):
+    conn = None
+    cur = None
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        query = """
+            INSERT INTO evaluation_metrics (
+                user_query,
+                retrieved_doc_count,
+                avg_distance,
+                retrieval_time_ms,
+                generation_time_ms,
+                json_valid,
+                fallback_used,
+                raw_output
+            )
+            VALUES (
+                %(user_query)s,
+                %(retrieved_doc_count)s,
+                %(avg_distance)s,
+                %(retrieval_time_ms)s,
+                %(generation_time_ms)s,
+                %(json_valid)s,
+                %(fallback_used)s,
+                %(raw_output)s::jsonb
+            )
+        """
+
+        cur.execute(query, metric_row)
+        conn.commit()
+
+    except Exception as e:
+        print("Error inserting evaluation metric:", e)
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+# -----------------------------
 # VECTOR SEARCH
 # -----------------------------
 def similarity_search(query_text, k=20):
+    
 
     embedding = client.embeddings.create(
         model="text-embedding-3-small",
@@ -266,6 +314,13 @@ def run_rag(user_query):
     - Returns recommendations or fallback if no relevant reviews
     - Always appends the result to conversation memory
     """
+    total_start = time.time()
+
+    memory_context = build_memory_context()
+
+    retrieval_start = time.time()
+    docs = similarity_search(user_query, k=8)
+    retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     memory_context = build_memory_context()
     docs = similarity_search(user_query, k=8)
@@ -279,6 +334,9 @@ def run_rag(user_query):
 
     st.session_state.last_docs = docs_for_map
 
+    distances = [d["distance"] for d in docs if d.get("distance") is not None]
+    avg_distance = sum(distances) / len(distances) if distances else None
+
     # -----------------------------
     # Fallback for irrelevant queries
     # -----------------------------
@@ -286,6 +344,18 @@ def run_rag(user_query):
         fallback = [{
             "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
         }]
+
+        metric_row = {
+            "user_query": user_query,
+            "retrieved_doc_count": 0,
+            "avg_distance": None,
+            "retrieval_time_ms": retrieval_time_ms,
+            "generation_time_ms": 0,
+            "json_valid": True,
+            "fallback_used": True,
+            "raw_output": json.dumps(fallback)
+        }
+        insert_evaluation_metric(metric_row)
 
         # Append to memory
         st.session_state.conversation_memory.append({
@@ -337,6 +407,7 @@ Review excerpts:
     # -----------------------------
     # Call LLM
     # -----------------------------
+    generation_start = time.time()
     response = client.chat.completions.create(
         model="gpt-4o-mini",  # stable model for chat
         messages=[
@@ -345,12 +416,13 @@ Review excerpts:
         ],
         temperature=0.3
     )
-
+    generation_time_ms = int((time.time() - generation_start) * 1000)
     answer = response.choices[0].message.content
 
     # -----------------------------
     # Parse response safely
     # -----------------------------
+    json_valid = True
     try:
         parsed = json.loads(answer)
     except:
@@ -363,6 +435,17 @@ Review excerpts:
             "photos": []
         }]
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    metric_row = {
+        "user_query": user_query,
+        "retrieved_doc_count": len(docs),
+        "avg_distance": avg_distance,
+        "retrieval_time_ms": retrieval_time_ms,
+        "generation_time_ms": generation_time_ms,
+        "json_valid": json_valid,
+        "fallback_used": False,
+        "raw_output": json.dumps(parsed)
+    }
+    insert_evaluation_metric(metric_row)
     # -----------------------------
     # Append to conversation memory
     # -----------------------------
@@ -463,7 +546,6 @@ def render_recommendations(recs):
         else:
             st.caption("Map not available for this restaurant.")
 
-
 # -----------------------------
 # STREAMLIT UI
 # -----------------------------
@@ -505,5 +587,6 @@ if user_query:
 
     with st.chat_message("assistant"):
         render_recommendations(recs)
+
 
 
