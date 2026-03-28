@@ -390,7 +390,7 @@ def render_small_map(lat, lon, restaurant_name="Restaurant"):
             initial_view_state=pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
-                zoom=15,
+                zoom=20,
                 pitch=0,
             ),
             layers=[
