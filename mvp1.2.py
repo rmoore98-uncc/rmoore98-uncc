@@ -379,7 +379,7 @@ def render_small_map(lat, lon):
 
     st.pydeck_chart(
         pdk.Deck(
-            map_style="mapbox://styles/mapbox/streets-v11",
+            map_style=None,
             initial_view_state=pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
@@ -397,7 +397,7 @@ def render_small_map(lat, lon):
             ],
             tooltip={"text": "Restaurant location"},
         ),
-        height=220,
+        height=180,
     )
 # -----------------------------
 # RENDER RECOMMENDATIONS
@@ -406,7 +406,6 @@ def render_recommendations(recs):
 
     for r in recs:
 
-        # Subheader logic for fallback
         restaurant_name = r.get("restaurant")
         if not restaurant_name:
             restaurant_name = "No relevant restaurants"
@@ -418,18 +417,15 @@ def render_recommendations(recs):
 
         st.write(r.get("description", ""))
 
-        #review excerpt
         excerpt = r.get("review_excerpt")
         if excerpt:
             st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
 
-        #explanation
         why = r.get("why_this_was_selected")
         if why:
             st.caption(f"💡 Explanation: {why}")
 
         photos = r.get("photos", [])
-
         cols = st.columns(len(photos)) if photos else []
 
         for i, photo in enumerate(photos):
@@ -440,20 +436,21 @@ def render_recommendations(recs):
                     """,
                     unsafe_allow_html=True,
                 )
+
         address = r.get("address")
         if address:
             st.write(f"**Address:** {address}")
-    else:
-        st.write("**Address:** Not available")
+        else:
+            st.write("**Address:** Not available")
 
         lat = r.get("latitude")
         lon = r.get("longitude")
 
-    if lat is not None and lon is not None:
-        st.write("📍 Location")
-        render_small_map(lat, lon)
-    else:
-        st.caption("Map not available for this restaurant.")
+        if lat is not None and lon is not None:
+            st.write("📍 Location")
+            render_small_map(lat, lon)
+        else:
+            st.caption("Map not available for this restaurant.")
 
 
 # -----------------------------
