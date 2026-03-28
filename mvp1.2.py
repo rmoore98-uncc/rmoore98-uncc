@@ -470,6 +470,8 @@ def render_recommendations(recs):
 st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
 
 st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
+st.write("### Hardcoded map test")
+render_small_map(35.2271, -80.8431, "Charlotte Test")
 st.write("Ask for restaurant recommendations based on real reviews.")
 
 if st.button("Clear history"):
