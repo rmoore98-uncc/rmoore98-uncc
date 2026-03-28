@@ -54,7 +54,7 @@ def get_connection():
 # -----------------------------
 # VECTOR SEARCH
 # -----------------------------
-def similarity_search(query_text, k=5):
+def similarity_search(query_text, k=20):
 
     embedding = client.embeddings.create(
         model="text-embedding-3-small",
@@ -67,19 +67,13 @@ def similarity_search(query_text, k=5):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     query = """
-        WITH ranked AS (
         SELECT
             rc.id,
             rc.review_id,
-            rc.place_id,
             rc.place_name,
             rc.chunk_text,
             COALESCE(photo_data.photos, '[]'::json) AS photos,
-            rc.embedding <=> %s::vector AS distance,
-            ROW_NUMBER() OVER (
-                PARTITION BY rc.place_name
-                ORDER BY rc.embedding <=> %s::vector
-            ) AS rn
+            rc.embedding <=> %s::vector AS distance
         FROM review_chunks rc
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
@@ -87,20 +81,9 @@ def similarity_search(query_text, k=5):
             WHERE rp.review_id = rc.review_id
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-          AND rc.embedding <=> %s::vector < 0.8
-    )
-    SELECT
-        id,
-        review_id,
-        place_id,
-        place_name,
-        chunk_text,
-        photos,
-        distance
-    FROM ranked
-    WHERE rn = 1
-    ORDER BY distance
-    LIMIT %s
+        AND rc.embedding <=> %s::vector < 0.6 
+        ORDER BY rc.embedding <=> %s::vector
+        LIMIT %s
     """
 
     cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
