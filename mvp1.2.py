@@ -398,7 +398,7 @@ def render_small_map(lat, lon, restaurant_name="Restaurant"):
                     "ScatterplotLayer",
                     data=df,
                     get_position='[lon, lat]',
-                    get_radius=80,
+                    get_radius=120,
                     get_fill_color=[255, 0, 0, 200],
                     stroked=True,
                     get_line_color=[0, 0, 0, 200],
