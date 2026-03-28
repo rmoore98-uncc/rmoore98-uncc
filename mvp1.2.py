@@ -165,12 +165,12 @@ def enrich_with_location(rows):
         normalized_address = normalize_address_for_geocoding(address)
         lat, lon = geocode_address(normalized_address)
 
-        if lat is None or lon is None:
-            fallback_address = strip_suite(normalized_address)
-            lat, lon = geocode_address(fallback_address)
+    if lat is None or lon is None:
+        fallback_address = strip_suite(normalized_address)
+        lat, lon = geocode_address(fallback_address)
 
-        new_row["latitude"] = lat
-        new_row["longitude"] = lon
+    new_row["latitude"] = lat
+    new_row["longitude"] = lon
 
     enriched.append(new_row)
 
@@ -389,7 +389,7 @@ def render_small_map(lat, lon, restaurant_name="Restaurant"):
             initial_view_state=pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
-                zoom=15,
+                zoom=16,
                 pitch=0,
             ),
             layers=[
