@@ -390,7 +390,7 @@ def render_small_map(lat, lon, restaurant_name="Restaurant"):
             initial_view_state=pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
-                zoom=16,
+                zoom=15,
                 pitch=0,
             ),
             layers=[
@@ -443,7 +443,7 @@ def render_recommendations(recs):
             with cols[i]:
                 st.markdown(
                     f"""
-                    <img src=\"{photo}\" style=\"width: 100%; max-width: 400px; max-height: 400px; object-fit: cover; border-radius: 8px;\" />
+                    <img src=\"{photo}\" style=\"width: 100%; max-width: 300px; max-height: 300px; object-fit: cover; border-radius: 8px;\" />
                     """,
                     unsafe_allow_html=True,
                 )
