@@ -153,18 +153,17 @@ def enrich_with_location(rows):
     enriched = []
 
     for row in rows:
-        new_row = dict(row)  # copy
+        new_row = dict(row)
 
-        address = address_map.get(row.get("place_id"))
-        new_row["address"] = address
+    address = address_map.get(row.get("place_id"))
+    new_row["address"] = address
 
-        # optional geocoding
-        new_row["latitude"] = None
-        new_row["longitude"] = None
+    new_row["latitude"] = None
+    new_row["longitude"] = None
 
-        if address:
-            normalized_address = normalize_address_for_geocoding(address)
-            lat, lon = geocode_address(normalized_address)
+    if address:
+        normalized_address = normalize_address_for_geocoding(address)
+        lat, lon = geocode_address(normalized_address)
 
         if lat is None or lon is None:
             fallback_address = strip_suite(normalized_address)
@@ -173,7 +172,7 @@ def enrich_with_location(rows):
         new_row["latitude"] = lat
         new_row["longitude"] = lon
 
-        enriched.append(new_row)
+    enriched.append(new_row)
 
     return enriched
 
