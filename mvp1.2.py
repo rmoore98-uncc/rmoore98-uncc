@@ -153,26 +153,27 @@ def enrich_with_location(rows):
     enriched = []
 
     for row in rows:
-        new_row = dict(row)
+        new_row = dict(row)  # copy
 
-    address = address_map.get(row.get("place_id"))
-    new_row["address"] = address
+        address = address_map.get(row.get("place_id"))
+        new_row["address"] = address
 
-    new_row["latitude"] = None
-    new_row["longitude"] = None
+        # optional geocoding
+        new_row["latitude"] = None
+        new_row["longitude"] = None
 
-    if address:
-        normalized_address = normalize_address_for_geocoding(address)
-        lat, lon = geocode_address(normalized_address)
+        if address:
+            normalized_address = normalize_address_for_geocoding(address)
+            lat, lon = geocode_address(normalized_address)
 
-    if lat is None or lon is None:
-        fallback_address = strip_suite(normalized_address)
-        lat, lon = geocode_address(fallback_address)
+        if lat is None or lon is None:
+            fallback_address = strip_suite(normalized_address)
+            lat, lon = geocode_address(fallback_address)
 
-    new_row["latitude"] = lat
-    new_row["longitude"] = lon
+        new_row["latitude"] = lat
+        new_row["longitude"] = lon
 
-    enriched.append(new_row)
+        enriched.append(new_row)
 
     return enriched
 
@@ -442,7 +443,7 @@ def render_recommendations(recs):
             with cols[i]:
                 st.markdown(
                     f"""
-                    <img src=\"{photo}\" style=\"width: 100%; max-width: 300px; max-height: 300px; object-fit: cover; border-radius: 8px;\" />
+                    <img src=\"{photo}\" style=\"width: 100%; max-width: 400px; max-height: 400px; object-fit: cover; border-radius: 8px;\" />
                     """,
                     unsafe_allow_html=True,
                 )
