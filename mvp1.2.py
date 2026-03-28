@@ -327,7 +327,7 @@ def run_rag(user_query):
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-    docs, embedding_input_tokens = similarity_search(user_query, k=8)
+    docs, embedding_input_tokens = similarity_search(user_query, k=20)
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
 # ✅ Use original docs for LLM (UNCHANGED)
