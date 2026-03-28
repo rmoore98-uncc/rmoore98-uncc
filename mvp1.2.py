@@ -67,14 +67,19 @@ def similarity_search(query_text, k=5):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     query = """
-        SELECT DISTINCT ON (rc.place_name)
+        WITH ranked AS (
+        SELECT
             rc.id,
             rc.review_id,
             rc.place_id,
             rc.place_name,
             rc.chunk_text,
             COALESCE(photo_data.photos, '[]'::json) AS photos,
-            rc.embedding <=> %s::vector AS distance
+            rc.embedding <=> %s::vector AS distance,
+            ROW_NUMBER() OVER (
+                PARTITION BY rc.place_name
+                ORDER BY rc.embedding <=> %s::vector
+            ) AS rn
         FROM review_chunks rc
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
@@ -83,8 +88,19 @@ def similarity_search(query_text, k=5):
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
           AND rc.embedding <=> %s::vector < 0.8
-        ORDER BY rc.place_name, rc.embedding <=> %s::vector
-        LIMIT %s
+    )
+    SELECT
+        id,
+        review_id,
+        place_id,
+        place_name,
+        chunk_text,
+        photos,
+        distance
+    FROM ranked
+    WHERE rn = 1
+    ORDER BY distance
+    LIMIT %s
     """
 
     cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
