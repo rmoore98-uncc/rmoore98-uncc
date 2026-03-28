@@ -255,55 +255,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 
     return enriched_recs
 
-# -----------------------------
-# Begin Answer Streamling Logic
-# -----------------------------
-def stream_llm_json_text(system_prompt, user_query, placeholder):
-    streamed_text = ""
 
-    stream = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
-        temperature=0.3,
-        stream=True,
-    )
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        content = delta.content if delta and delta.content else ""
-
-        if content:
-            streamed_text += content
-            placeholder.markdown(streamed_text)
-
-    return streamed_text
-# -----------------------------
-# Plain Text Streaming
-def stream_plaintext_answer(system_prompt, user_query, placeholder):
-    streamed_text = ""
-
-    stream = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
-        temperature=0.3,
-        stream=True,
-    )
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        content = delta.content if delta and delta.content else ""
-
-        if content:
-            streamed_text += content
-            placeholder.markdown(streamed_text)
-
-    return streamed_text
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
@@ -318,14 +270,24 @@ def run_rag(user_query):
     memory_context = build_memory_context()
     docs = similarity_search(user_query, k=8)
 
+# ✅ Use original docs for LLM (UNCHANGED)
+    docs_for_llm = docs
+
+# ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
+
+
     st.session_state.last_docs = docs_for_map
 
+    # -----------------------------
+    # Fallback for irrelevant queries
+    # -----------------------------
     if not docs:
         fallback = [{
-            "description": "There are no relevant reviews based on your input."
+            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
         }]
 
+        # Append to memory
         st.session_state.conversation_memory.append({
             "user": user_query,
             "assistant": fallback
@@ -333,59 +295,50 @@ def run_rag(user_query):
 
         return fallback
 
+    # -----------------------------
+    # Build review context for LLM
+    # -----------------------------
     review_context = build_review_context(docs)
 
-    # -----------------------------
-    # 1. STREAM HUMAN-FRIENDLY TEXT
-    # -----------------------------
-    text_prompt = f"""
-You are a helpful food assistant.
-
-Write a short, engaging recommendation using these reviews.
-
-Do NOT return JSON.
-Write naturally like a human.
-
-User query:
-{user_query}
-
-Reviews:
-{review_context}
-"""
-
-    stream_placeholder = st.empty()
-    stream_plaintext_answer(text_prompt, user_query, stream_placeholder)
-    stream_placeholder.empty()
-
-    # -----------------------------
-    # 2. STRUCTURED JSON (NON-STREAM)
-    # -----------------------------
     system_prompt = f"""
 You are a professional food critic.
 
-Generate up to THREE restaurant recommendations.
+Generate up to THREE restaurant recommendations based on the review excerpts provided.
 
-Return ONLY valid JSON:
+Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
+If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
+
+Return ONLY valid JSON using this structure:
 
 [
   {{
     "restaurant": "restaurant name",
-    "dish": "specific dish",
+    "dish": "specific dish mentioned in reviews",
     "description": "short recommendation",
-    "review_excerpt": "quote",
-    "why_this_was_selected": "reason",
+    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
+    "why_this_was_selected": "brief explanation tying the user query to the review",
     "photos": ["photo_url1", "photo_url2"]
   }}
 ]
 
-Use ONLY the provided reviews.
+Previous conversation:
+{memory_context}
 
-Reviews:
+Review excerpts:
 {review_context}
+
+**Important:**  
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
+- Use only information from the review excerpts provided. Do NOT make up any details.
+- Provide your justification for selecting the review_excerpt.
 """
 
+    # -----------------------------
+    # Call LLM
+    # -----------------------------
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o-mini",  # stable model for chat
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
@@ -395,35 +348,533 @@ Reviews:
 
     answer = response.choices[0].message.content
 
+    # -----------------------------
+    # Parse response safely
+    # -----------------------------
     try:
         parsed = json.loads(answer)
     except:
         parsed = [{
             "restaurant": "",
-            "description": "Error generating recommendations.",
+            "dish": "",
+            "description": "Error generating recommendations. Please try again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
             "photos": []
         }]
-
-    # -----------------------------
-    # Attach addresses + coords
-    # -----------------------------
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    # -----------------------------
+    # Append to conversation memory
+    # -----------------------------
+    st.session_state.conversation_memory.append({
+        "user": user_query,
+        "assistant": parsed
+    })
+
+    return parsed
+# -----------------------------
+# -- RENDER SMALL MAP FOR EACH RECOMMENDATION --
+def render_small_map(lat, lon, restaurant_name="Restaurant"):
+    lat = float(lat)
+    lon = float(lon)
+
+    df = pd.DataFrame([{
+        "lat": lat,
+        "lon": lon,
+        "name": restaurant_name
+    }])
+
+    st.pydeck_chart(
+        pdk.Deck(
+            map_style=None,
+            initial_view_state=pdk.ViewState(
+                latitude=lat,
+                longitude=lon,
+                zoom=13,
+                pitch=0,
+            ),
+            layers=[
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=df,
+                    get_position='[lon, lat]',
+                    get_radius=80,
+                    get_fill_color=[255, 0, 0, 200],
+                    stroked=True,
+                    get_line_color=[0, 0, 0, 200],
+                    line_width_min_pixels=1,
+                    pickable=True,
+                )
+            ],
+            tooltip={"text": "{name}"},
+        ),
+        height=180,
+    )
+# -----------------------------
+# RENDER RECOMMENDATIONS
+# -----------------------------
+def render_recommendations(recs):
+
+    for r in recs:
+
+        restaurant_name = r.get("restaurant")
+        if not restaurant_name:
+            restaurant_name = "No relevant restaurants"
+        st.subheader(restaurant_name)
+
+        dish = r.get("dish")
+        if dish:
+            st.write(f"**Recommended dish:** {dish}")
+
+        st.write(r.get("description", ""))
+
+        excerpt = r.get("review_excerpt")
+        if excerpt:
+            st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
+
+        why = r.get("why_this_was_selected")
+        if why:
+            st.caption(f"💡 Explanation: {why}")
+
+        photos = r.get("photos", [])
+        cols = st.columns(len(photos)) if photos else []
+
+        for i, photo in enumerate(photos):
+            with cols[i]:
+                st.markdown(
+                    f"""
+                    <img src=\"{photo}\" style=\"width: 100%; max-width: 300px; max-height: 300px; object-fit: cover; border-radius: 8px;\" />
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        address = r.get("address")
+        if address:
+            st.write(f"**Address:** {address}")
+        else:
+            st.write("**Address:** Not available")
+
+        lat = r.get("latitude")
+        lon = r.get("longitude")
+
+        if lat is not None and lon is not None:
+            st.write("📍 Location")
+            render_small_map(lat, lon, restaurant_name=restaurant_name)
+        else:
+            st.caption("Map not available for this restaurant.")
+
+
+# -----------------------------
+# STREAMLIT UI
+# -----------------------------
+st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
+
+st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
+st.write("Ask for restaurant recommendations based on real reviews.")
+
+if st.button("Clear history"):
+    st.session_state.conversation_memory = []
+    st.session_state.recommended_restaurants = set()
+    st.rerun()
+
+
+# -----------------------------
+# DISPLAY CHAT HISTORY
+# -----------------------------
+for msg in st.session_state.conversation_memory:
+
+    with st.chat_message("user"):
+        st.write(msg["user"])
+
+    with st.chat_message("assistant"):
+        render_recommendations(msg["assistant"])
+
+
+# -----------------------------
+# USER INPUT
+# -----------------------------
+user_query = st.chat_input("What kind of food or drink are you looking for?")
+
+if user_query:
+
+    with st.chat_message("user"):
+        st.write(user_query)
+
+    with st.spinner("Analyzing reviews..."):
+        recs = run_rag(user_query)
+
+    with st.chat_message("assistant"):
+        render_recommendations(recs)
+
+
+import streamlit as st
+from dotenv import load_dotenv
+from openai import OpenAI
+import psycopg2
+import psycopg2.extras
+import os
+import json
+from geopy.geocoders import Nominatim
+from functools import lru_cache
+import pandas as pd
+import re
+import pydeck as pdk
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DB_PASSWORD = os.getenv("PASSWORD")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# -----------------------------
+# GEOCODING (Address → Lat/Lon)
+# -----------------------------
+geolocator = Nominatim(user_agent="foodfinder_app", timeout=10)
+
+# -----------------------------
+# ADDRESS NORMALIZATION FOR BETTER GEOCODING
+# -----------------------------
+def normalize_address_for_geocoding(address):
+    # Remove suite/apartment info for better geocoding
+    patterns = [
+        r",?\s*Suite\s*\d+\w*",  # Suite 100, Suite 100A
+        r",?\s*Apt\s*\d+\w*",    # Apt 5, Apt 5B
+        r",?\s*Apartment\s*\d+\w*",  # Apartment 3, Apartment 3C
+        r",?\s*Unit\s*\d+\w*",   # Unit 4, Unit 4D
+    ]
+    for pattern in patterns:
+        address = re.sub(pattern, "", address, flags=re.IGNORECASE)
+    return address.strip()
+
+def strip_suite(address):
+    if not address:
+        return ""
+    return re.sub(r',?\s*(Suite|Ste|Unit)\s+\w+', '', address, flags=re.IGNORECASE)
+#-----------------------------    
+
+@lru_cache(maxsize=1000)
+def geocode_address(address):
+    try:
+        location = geolocator.geocode(address)
+        if location:
+            return location.latitude, location.longitude
+    except Exception as e:
+        print("Geocoding error:", e)
+    return None, None
+
+# -----------------------------
+# STREAMLIT SESSION MEMORY
+# -----------------------------
+if "conversation_memory" not in st.session_state:
+    st.session_state.conversation_memory = []
+
+if "recommended_restaurants" not in st.session_state:
+    st.session_state.recommended_restaurants = set()
+
+# -----------------------------
+# DB CONNECTION
+# -----------------------------
+def get_connection():
+    return psycopg2.connect(
+        user="postgres.teyeutbzecbobotobhzc",
+        password=DB_PASSWORD,
+        host="aws-0-us-west-2.pooler.supabase.com",
+        port=6543,
+        dbname="postgres",
+    )
+
+# -----------------------------
+# VECTOR SEARCH
+# -----------------------------
+def similarity_search(query_text, k=20):
+
+    embedding = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=query_text
+    ).data[0].embedding
+
+    embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    query = """
+        SELECT
+            rc.id,
+            rc.review_id,
+            rc.place_name,
+            rc.chunk_text,
+            rc.place_id,
+            COALESCE(photo_data.photos, '[]'::json) AS photos,
+            rc.embedding <=> %s::vector AS distance
+        FROM review_chunks rc
+        LEFT JOIN LATERAL (
+            SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
+            FROM review_photos rp
+            WHERE rp.review_id = rc.review_id
+        ) photo_data ON TRUE
+        WHERE rc.embedding IS NOT NULL
+        AND rc.embedding <=> %s::vector < 0.6 
+        ORDER BY rc.embedding <=> %s::vector
+        LIMIT %s
+    """
+
+    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return rows
+
+# ------------------------------
+
+# -----------------
+# Enrich Query Results with Address
+def enrich_with_location(rows):
+
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    place_ids = list(set([
+        row["place_id"] for row in rows if row.get("place_id")
+    ]))
+
+    address_map = {}
+
+    if place_ids:
+        cur.execute("""
+            SELECT place_id, address
+            FROM place_table
+            WHERE place_id = ANY(%s)
+        """, (place_ids,))
+
+        address_map = {
+            r["place_id"]: r["address"]
+            for r in cur.fetchall()
+        }
+
+    cur.close()
+    conn.close()
+
+    # ⚠️ IMPORTANT: create a NEW list (don’t mutate original)
+    enriched = []
+
+    for row in rows:
+        new_row = dict(row)  # copy
+
+        address = address_map.get(row.get("place_id"))
+        new_row["address"] = address
+
+        # optional geocoding
+        new_row["latitude"] = None
+        new_row["longitude"] = None
+
+        if address:
+            normalized_address = normalize_address_for_geocoding(address)
+            lat, lon = geocode_address(normalized_address)
+
+        if lat is None or lon is None:
+            fallback_address = strip_suite(normalized_address)
+            lat, lon = geocode_address(fallback_address)
+
+        new_row["latitude"] = lat
+        new_row["longitude"] = lon
+
+        enriched.append(new_row)
+
+    return enriched
+
+# -----------------------------
+# BUILD MEMORY CONTEXT
+# -----------------------------
+def build_memory_context():
+
+    memory = st.session_state.conversation_memory
+
+    if not memory:
+        return "No previous conversation."
+
+    text = ""
+
+    for turn in memory:
+        text += f"User: {turn['user']}\n"
+        text += f"Assistant: {json.dumps(turn['assistant'])}\n"
+
+    return text
+
+
+# -----------------------------
+# BUILD REVIEW CONTEXT
+# -----------------------------
+def build_review_context(docs):
+
+    context = ""
+
+    for d in docs:
+
+        photos = d.get("photos") or []
+        photo_links = []
+
+        if isinstance(photos, list):
+            for photo_item in photos:
+                link = photo_item.get("photo_link")
+                if link:
+                    photo_links.append(link)
+
+        photos_text = ", ".join(photo_links) if photo_links else "No photos"
+
+        context += f"""
+Restaurant: {d['place_name']}
+Review: {d['chunk_text']}
+Similarity Score: {round(d['distance'],4)}
+Photo Links: {photos_text}
+"""
+
+    return context
+
+# -----------------------------
+# Attach Addresses to Recommendations for Map/UI
+def attach_addresses_to_recommendations(recommendations, docs_for_map):
+    address_lookup = {}
+
+    for d in docs_for_map:
+        place_name = d.get("place_name")
+        if place_name:
+            address_lookup[place_name.strip().lower()] = {
+                "address": d.get("address"),
+                "latitude": d.get("latitude"),
+                "longitude": d.get("longitude"),
+            }
+
+    enriched_recs = []
+
+    for rec in recommendations:
+        new_rec = dict(rec)
+        restaurant = rec.get("restaurant", "")
+        key = restaurant.strip().lower()
+
+        location_data = address_lookup.get(key, {})
+        new_rec["address"] = location_data.get("address")
+        new_rec["latitude"] = location_data.get("latitude")
+        new_rec["longitude"] = location_data.get("longitude")
+
+        enriched_recs.append(new_rec)
+
+    return enriched_recs
+
+
+# -----------------------------
+# MAIN RAG FUNCTION
+# -----------------------------
+def run_rag(user_query):
+    """
+    Main RAG function:
+    - Performs similarity search
+    - Returns recommendations or fallback if no relevant reviews
+    - Always appends the result to conversation memory
+    """
+
+    memory_context = build_memory_context()
+    docs = similarity_search(user_query, k=8)
+
+# ✅ Use original docs for LLM (UNCHANGED)
+    docs_for_llm = docs
+
+# ✅ Use enriched docs for map/UI
+    docs_for_map = enrich_with_location(docs)
+
+
+    st.session_state.last_docs = docs_for_map
 
     # -----------------------------
-    # Attach photos from source if missing
+    # Fallback for irrelevant queries
     # -----------------------------
-    for rec in parsed:
-        if not rec.get("photos"):
+    if not docs:
+        fallback = [{
+            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+        }]
 
-            for d in docs_for_map:
-                    photos = d.get("photos", [])
-                    rec["photos"] = [
-                        p.get("photo_link")
-                        for p in photos
-                        if p.get("photo_link")
-                    ]
-                    break
+        # Append to memory
+        st.session_state.conversation_memory.append({
+            "user": user_query,
+            "assistant": fallback
+        })
 
+        return fallback
+
+    # -----------------------------
+    # Build review context for LLM
+    # -----------------------------
+    review_context = build_review_context(docs)
+
+    system_prompt = f"""
+You are a professional food critic.
+
+Generate up to THREE restaurant recommendations based on the review excerpts provided.
+
+Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
+If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
+
+Return ONLY valid JSON using this structure:
+
+[
+  {{
+    "restaurant": "restaurant name",
+    "dish": "specific dish mentioned in reviews",
+    "description": "short recommendation",
+    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
+    "why_this_was_selected": "brief explanation tying the user query to the review",
+    "photos": ["photo_url1", "photo_url2"]
+  }}
+]
+
+Previous conversation:
+{memory_context}
+
+Review excerpts:
+{review_context}
+
+**Important:**  
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
+- Use only information from the review excerpts provided. Do NOT make up any details.
+- Provide your justification for selecting the review_excerpt.
+"""
+
+    # -----------------------------
+    # Call LLM
+    # -----------------------------
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",  # stable model for chat
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.3
+    )
+
+    answer = response.choices[0].message.content
+
+    # -----------------------------
+    # Parse response safely
+    # -----------------------------
+    try:
+        parsed = json.loads(answer)
+    except:
+        parsed = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "Error generating recommendations. Please try again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
+    parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    # -----------------------------
+    # Append to conversation memory
+    # -----------------------------
     st.session_state.conversation_memory.append({
         "user": user_query,
         "assistant": parsed
