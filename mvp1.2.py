@@ -330,7 +330,6 @@ Review excerpts:
             "photos": []
         }]
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-    st.write("DEBUG parsed with address:", parsed)
     # -----------------------------
     # Append to conversation memory
     # -----------------------------
@@ -388,7 +387,13 @@ def render_recommendations(recs):
                     unsafe_allow_html=True,
                 )
 
-
+# -----------------------------
+# Add Address Cards
+if "last_docs" in st.session_state and st.session_state.last_docs:
+    st.write("### Restaurant Locations")
+    for d in st.session_state.last_docs:
+        st.write(f"**{d.get('place_name', 'Unknown')}**")
+        st.write(f"Address: {d.get('address', 'Not available')}")
 # -----------------------------
 # STREAMLIT UI
 # -----------------------------
