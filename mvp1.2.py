@@ -359,6 +359,10 @@ def render_recommendations(recs):
 
         st.write(r.get("description", ""))
 
+        address = r.get("address")
+        if address:
+            st.write(f"**Address:** {address}")
+
         #review excerpt
         excerpt = r.get("review_excerpt")
         if excerpt:
