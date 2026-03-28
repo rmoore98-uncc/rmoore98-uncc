@@ -391,9 +391,13 @@ def render_small_map(lat, lon):
                     "ScatterplotLayer",
                     data=df,
                     get_position='[lon, lat]',
-                    get_radius=35,
+                    get_radius=120,
+                    get_fill_color=[255, 0, 0, 200],
+                    stroked=True,
+                    get_line_color=[0, 0, 0, 200],
+                    line_width_min_pixels=1,
                     pickable=True,
-                )
+                    auto_highlight=True,)
             ],
             tooltip={"text": "Restaurant location"},
         ),
