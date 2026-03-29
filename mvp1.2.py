@@ -156,6 +156,96 @@ def parse_recommendations(answer):
     }], False
 
 # -----------------------------
+# LLM as a Judge
+def evaluate_with_llm_judge(user_query, docs_for_llm, parsed_recommendations):
+    """
+    Uses a second LLM call to score the quality of the generated recommendations.
+    Returns scores plus token usage.
+    """
+
+    review_context = build_review_context(docs_for_llm)
+
+    judge_prompt = f"""
+You are evaluating a restaurant recommendation system.
+
+Score the recommendation output on a 1-5 scale for each category:
+
+1. relevance_score:
+How well do the recommendations match the user's request?
+
+2. groundedness_score:
+Are the recommendations supported by the retrieved review excerpts?
+Do not reward made-up details.
+
+3. helpfulness_score:
+Would this answer be useful to a user?
+
+4. overall_score:
+Overall quality of the answer.
+
+Also provide a short notes field explaining the scores.
+
+Return ONLY valid JSON in this exact format:
+{{
+  "relevance_score": 1,
+  "groundedness_score": 1,
+  "helpfulness_score": 1,
+  "overall_score": 1,
+  "notes": "short explanation"
+}}
+
+User query:
+{user_query}
+
+Retrieved review context:
+{review_context}
+
+Generated recommendations:
+{json.dumps(parsed_recommendations, ensure_ascii=False)}
+"""
+
+    try:
+        judge_response = client.chat.completions.create(
+            model="gpt-5.4-nano",
+            messages=[
+                {"role": "system", "content": "You are a strict evaluation judge. Return only valid JSON."},
+                {"role": "user", "content": judge_prompt},
+            ],
+            temperature=0
+        )
+
+        judge_answer = judge_response.choices[0].message.content or ""
+
+        judge_usage = judge_response.usage
+
+        try:
+            judge_parsed = json.loads(judge_answer)
+        except Exception:
+            judge_parsed = {
+                "relevance_score": None,
+                "groundedness_score": None,
+                "helpfulness_score": None,
+                "overall_score": None,
+                "notes": "Judge response could not be parsed."
+            }
+
+        return {
+            "judge_relevance_score": judge_parsed.get("relevance_score"),
+            "judge_groundedness_score": judge_parsed.get("groundedness_score"),
+            "judge_helpfulness_score": judge_parsed.get("helpfulness_score"),
+            "judge_overall_score": judge_parsed.get("overall_score"),
+            "judge_notes": judge_parsed.get("notes"),
+        }
+
+    except Exception as e:
+        return {
+            "judge_relevance_score": None,
+            "judge_groundedness_score": None,
+            "judge_helpfulness_score": None,
+            "judge_overall_score": None,
+            "judge_notes": f"Judge evaluation failed: {str(e)}",
+        }
+# -----------------------------
 # STREAMLIT SESSION MEMORY
 # -----------------------------
 if "conversation_memory" not in st.session_state:
@@ -188,35 +278,45 @@ def insert_evaluation_metric(metric_row):
         cur = conn.cursor()
 
         query = """
-            INSERT INTO evaluation_metrics (
-                user_query,
-                retrieved_doc_count,
-                avg_distance,
-                retrieval_time_ms,
-                generation_time_ms,
-                embedding_input_tokens,
-                llm_input_tokens,
-                llm_output_tokens,
-                llm_total_tokens,
-                json_valid,
-                fallback_used,
-                raw_output
-            )
-            VALUES (
-                %(user_query)s,
-                %(retrieved_doc_count)s,
-                %(avg_distance)s,
-                %(retrieval_time_ms)s,
-                %(generation_time_ms)s,
-                %(embedding_input_tokens)s,
-                %(llm_input_tokens)s,
-                %(llm_output_tokens)s,
-                %(llm_total_tokens)s,
-                %(json_valid)s,
-                %(fallback_used)s,
-                %(raw_output)s::jsonb
-            )
-        """
+    INSERT INTO evaluation_metrics (
+        user_query,
+        retrieved_doc_count,
+        avg_distance,
+        retrieval_time_ms,
+        generation_time_ms,
+        embedding_input_tokens,
+        llm_input_tokens,
+        llm_output_tokens,
+        llm_total_tokens,
+        json_valid,
+        fallback_used,
+        raw_output,
+        judge_relevance_score,
+        judge_groundedness_score,
+        judge_helpfulness_score,
+        judge_overall_score,
+        judge_notes,
+    )
+    VALUES (
+        %(user_query)s,
+        %(retrieved_doc_count)s,
+        %(avg_distance)s,
+        %(retrieval_time_ms)s,
+        %(generation_time_ms)s,
+        %(embedding_input_tokens)s,
+        %(llm_input_tokens)s,
+        %(llm_output_tokens)s,
+        %(llm_total_tokens)s,
+        %(json_valid)s,
+        %(fallback_used)s,
+        %(raw_output)s::jsonb,
+        %(judge_relevance_score)s,
+        %(judge_groundedness_score)s,
+        %(judge_helpfulness_score)s,
+        %(judge_overall_score)s,
+        %(judge_notes)s,
+    )
+"""
 
         cur.execute(query, metric_row)
         conn.commit()
@@ -542,6 +642,7 @@ Review excerpts:
     # -----------------------------
     parsed, json_valid = parse_recommendations(answer)
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    judge_results = evaluate_with_llm_judge(user_query, docs_for_llm, parsed)
     metric_row = {
         "user_query": user_query,
         "retrieved_doc_count": len(docs),
@@ -554,7 +655,12 @@ Review excerpts:
         "llm_total_tokens": llm_total_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
-        "raw_output": json.dumps(parsed)
+        "raw_output": json.dumps(parsed),
+        "relevance_score": judge_results.get("relevance_score"),
+        "groundedness_score": judge_results.get("groundedness_score"),
+        "helpfulness_score": judge_results.get("helpfulness_score"),
+        "overall_score": judge_results.get("overall_score"),
+        "notes": judge_results.get("notes", "Judge response could not be parsed.")
     }
     insert_evaluation_metric(metric_row)
     # -----------------------------
