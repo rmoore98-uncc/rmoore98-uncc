@@ -254,6 +254,18 @@ if "conversation_memory" not in st.session_state:
 if "recommended_restaurants" not in st.session_state:
     st.session_state.recommended_restaurants = set()
 
+if "last_user_query" not in st.session_state:
+    st.session_state.last_user_query = None
+
+if "last_docs_for_llm" not in st.session_state:
+    st.session_state.last_docs_for_llm = None
+
+if "last_parsed_recommendations" not in st.session_state:
+    st.session_state.last_parsed_recommendations = None
+
+if "last_metric_row_id" not in st.session_state:
+    st.session_state.last_metric_row_id = None
+
 # -----------------------------
 # DB CONNECTION
 # -----------------------------
@@ -278,51 +290,87 @@ def insert_evaluation_metric(metric_row):
         cur = conn.cursor()
 
         query = """
-    INSERT INTO evaluation_metrics (
-        user_query,
-        retrieved_doc_count,
-        avg_distance,
-        retrieval_time_ms,
-        generation_time_ms,
-        embedding_input_tokens,
-        llm_input_tokens,
-        llm_output_tokens,
-        llm_total_tokens,
-        json_valid,
-        fallback_used,
-        raw_output,
-        judge_relevance_score,
-        judge_groundedness_score,
-        judge_helpfulness_score,
-        judge_overall_score,
-        judge_notes,
-    )
-    VALUES (
-        %(user_query)s,
-        %(retrieved_doc_count)s,
-        %(avg_distance)s,
-        %(retrieval_time_ms)s,
-        %(generation_time_ms)s,
-        %(embedding_input_tokens)s,
-        %(llm_input_tokens)s,
-        %(llm_output_tokens)s,
-        %(llm_total_tokens)s,
-        %(json_valid)s,
-        %(fallback_used)s,
-        %(raw_output)s::jsonb,
-        %(judge_relevance_score)s,
-        %(judge_groundedness_score)s,
-        %(judge_helpfulness_score)s,
-        %(judge_overall_score)s,
-        %(judge_notes)s,
-    )
-"""
+            INSERT INTO evaluation_metrics (
+                user_query,
+                retrieved_doc_count,
+                avg_distance,
+                retrieval_time_ms,
+                generation_time_ms,
+                embedding_input_tokens,
+                llm_input_tokens,
+                llm_output_tokens,
+                llm_total_tokens,
+                json_valid,
+                fallback_used,
+                raw_output
+            )
+            VALUES (
+                %(user_query)s,
+                %(retrieved_doc_count)s,
+                %(avg_distance)s,
+                %(retrieval_time_ms)s,
+                %(generation_time_ms)s,
+                %(embedding_input_tokens)s,
+                %(llm_input_tokens)s,
+                %(llm_output_tokens)s,
+                %(llm_total_tokens)s,
+                %(json_valid)s,
+                %(fallback_used)s,
+                %(raw_output)s::jsonb
+            )
+            RETURNING id
+        """
 
         cur.execute(query, metric_row)
+        inserted_id = cur.fetchone()[0]
         conn.commit()
+        return inserted_id
 
     except Exception as e:
         print("Error inserting evaluation metric:", e)
+        if conn:
+            conn.rollback()
+        return None
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+
+def update_judge_metrics(row_id, judge_results):
+    if row_id is None:
+        return False
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        query = """
+            UPDATE evaluation_metrics
+            SET
+                judge_relevance_score = %(judge_relevance_score)s,
+                judge_groundedness_score = %(judge_groundedness_score)s,
+                judge_helpfulness_score = %(judge_helpfulness_score)s,
+                judge_overall_score = %(judge_overall_score)s,
+                judge_notes = %(judge_notes)s
+            WHERE id = %(id)s
+        """
+
+        payload = {"id": row_id, **judge_results}
+        cur.execute(query, payload)
+        conn.commit()
+        return True
+
+    except Exception as e:
+        print("Error updating judge metrics:", e)
+        if conn:
+            conn.rollback()
+        return False
 
     finally:
         if cur:
@@ -520,6 +568,8 @@ def run_rag(user_query):
     Main RAG function:
     - Performs similarity search
     - Returns recommendations or fallback if no relevant reviews
+    - Inserts base evaluation metrics immediately
+    - Stores data needed for optional later LLM-as-a-judge evaluation
     - Always appends the result to conversation memory
     """
     total_start = time.time()
@@ -527,15 +577,11 @@ def run_rag(user_query):
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-    docs, embedding_input_tokens = similarity_search(user_query, k=20)
+    docs, embedding_input_tokens = similarity_search(user_query, k=8)
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
-# ✅ Use original docs for LLM (UNCHANGED)
     docs_for_llm = docs
-
-# ✅ Use enriched docs for map/UI
     docs_for_map = enrich_with_location(docs)
-
 
     st.session_state.last_docs = docs_for_map
 
@@ -546,9 +592,6 @@ def run_rag(user_query):
     llm_output_tokens = 0
     llm_total_tokens = 0
 
-    # -----------------------------
-    # Fallback for irrelevant queries
-    # -----------------------------
     if not docs:
         fallback = [{
             "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
@@ -568,9 +611,14 @@ def run_rag(user_query):
             "fallback_used": True,
             "raw_output": json.dumps(fallback)
         }
-        insert_evaluation_metric(metric_row)
 
-        # Append to memory
+        metric_row_id = insert_evaluation_metric(metric_row)
+
+        st.session_state.last_user_query = user_query
+        st.session_state.last_docs_for_llm = docs_for_llm
+        st.session_state.last_parsed_recommendations = fallback
+        st.session_state.last_metric_row_id = metric_row_id
+
         st.session_state.conversation_memory.append({
             "user": user_query,
             "assistant": fallback
@@ -578,10 +626,7 @@ def run_rag(user_query):
 
         return fallback
 
-    # -----------------------------
-    # Build review context for LLM
-    # -----------------------------
-    review_context = build_review_context(docs)
+    review_context = build_review_context(docs_for_llm)
 
     system_prompt = f"""
 You are a professional food critic.
@@ -617,12 +662,9 @@ Review excerpts:
 - Provide your justification for selecting the review_excerpt.
 """
 
-    # -----------------------------
-    # Call LLM
-    # -----------------------------
     generation_start = time.time()
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # stable model for chat
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
@@ -630,19 +672,17 @@ Review excerpts:
         temperature=0.3
     )
     generation_time_ms = int((time.time() - generation_start) * 1000)
+
     usage = response.usage
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
 
-    answer = response.choices[0].message.content
+    answer = response.choices[0].message.content or ""
 
-    # -----------------------------
-    # Parse response safely
-    # -----------------------------
     parsed, json_valid = parse_recommendations(answer)
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-    judge_results = evaluate_with_llm_judge(user_query, docs_for_llm, parsed)
+
     metric_row = {
         "user_query": user_query,
         "retrieved_doc_count": len(docs),
@@ -655,23 +695,23 @@ Review excerpts:
         "llm_total_tokens": llm_total_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
-        "raw_output": json.dumps(parsed),
-        "relevance_score": judge_results.get("relevance_score"),
-        "groundedness_score": judge_results.get("groundedness_score"),
-        "helpfulness_score": judge_results.get("helpfulness_score"),
-        "overall_score": judge_results.get("overall_score"),
-        "notes": judge_results.get("notes", "Judge response could not be parsed.")
+        "raw_output": json.dumps(parsed)
     }
-    insert_evaluation_metric(metric_row)
-    # -----------------------------
-    # Append to conversation memory
-    # -----------------------------
+
+    metric_row_id = insert_evaluation_metric(metric_row)
+
+    st.session_state.last_user_query = user_query
+    st.session_state.last_docs_for_llm = docs_for_llm
+    st.session_state.last_parsed_recommendations = parsed
+    st.session_state.last_metric_row_id = metric_row_id
+
     st.session_state.conversation_memory.append({
         "user": user_query,
         "assistant": parsed
     })
 
     return parsed
+
 # -----------------------------
 # -- RENDER SMALL MAP FOR EACH RECOMMENDATION --
 def render_small_map(lat, lon, restaurant_name="Restaurant"):
@@ -788,6 +828,36 @@ for msg in st.session_state.conversation_memory:
     with st.chat_message("assistant"):
         render_recommendations(msg["assistant"])
 
+
+# -----------------------------
+# OPTIONAL LLM-AS-A-JUDGE
+# -----------------------------
+st.sidebar.subheader("Evaluation")
+
+if st.sidebar.button("Run judge on last result"):
+    if (
+        st.session_state.last_user_query is not None
+        and st.session_state.last_docs_for_llm is not None
+        and st.session_state.last_parsed_recommendations is not None
+        and st.session_state.last_metric_row_id is not None
+    ):
+        with st.spinner("Running judge evaluation..."):
+            judge_results = evaluate_with_llm_judge(
+                st.session_state.last_user_query,
+                st.session_state.last_docs_for_llm,
+                st.session_state.last_parsed_recommendations
+            )
+            updated = update_judge_metrics(
+                st.session_state.last_metric_row_id,
+                judge_results
+            )
+
+        if updated:
+            st.sidebar.success("Judge metrics saved.")
+        else:
+            st.sidebar.error("Judge metrics could not be saved.")
+    else:
+        st.sidebar.warning("No recent result is available to judge.")
 
 # -----------------------------
 # USER INPUT
