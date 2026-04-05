@@ -408,7 +408,8 @@ def similarity_search(query_text, k=20):
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
             FROM review_photos rp
-            WHERE rp.review_id = rc.review_id
+            WHERE rp.place_id = rc.place_id
+            LIMIT 5
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
         AND rc.embedding <=> %s::vector < 0.6
@@ -531,29 +532,64 @@ Photo Links: {photos_text}
 
 # -----------------------------
 # Attach Addresses to Recommendations for Map/UI
+def _extract_photo_urls(photos_raw):
+    """Normalize photos from either list-of-dicts (DB) or list-of-strings (LLM)."""
+    urls = []
+    for p in (photos_raw or []):
+        if isinstance(p, str) and p.startswith("http"):
+            urls.append(p)
+        elif isinstance(p, dict):
+            link = p.get("photo_link") or p.get("url") or p.get("photo_url")
+            if link and link.startswith("http"):
+                urls.append(link)
+    return urls
+
+
 def attach_addresses_to_recommendations(recommendations, docs_for_map):
-    address_lookup = {}
+    # Key all lookups by place_id (reliable) AND place_name (for LLM name matching)
+    by_place_id   = {}   # place_id  -> {address, latitude, longitude, photos}
+    by_place_name = {}   # place_name.lower() -> place_id
 
     for d in docs_for_map:
+        place_id   = d.get("place_id")
         place_name = d.get("place_name")
-        if place_name:
-            address_lookup[place_name.strip().lower()] = {
-                "address": d.get("address"),
-                "latitude": d.get("latitude"),
+        if not place_id:
+            continue
+
+        if place_id not in by_place_id:
+            by_place_id[place_id] = {
+                "address":   d.get("address"),
+                "latitude":  d.get("latitude"),
                 "longitude": d.get("longitude"),
+                "photos":    [],
             }
+
+        for url in _extract_photo_urls(d.get("photos") or []):
+            if url not in by_place_id[place_id]["photos"]:
+                by_place_id[place_id]["photos"].append(url)
+
+        if place_name:
+            by_place_name[place_name.strip().lower()] = place_id
 
     enriched_recs = []
 
     for rec in recommendations:
         new_rec = dict(rec)
-        restaurant = rec.get("restaurant", "")
-        key = restaurant.strip().lower()
+        name_key = rec.get("restaurant", "").strip().lower()
 
-        location_data = address_lookup.get(key, {})
-        new_rec["address"] = location_data.get("address")
-        new_rec["latitude"] = location_data.get("latitude")
-        new_rec["longitude"] = location_data.get("longitude")
+        # Resolve place_id via exact name match, then partial match
+        place_id = by_place_name.get(name_key)
+        if not place_id:
+            for db_name, pid in by_place_name.items():
+                if name_key in db_name or db_name in name_key:
+                    place_id = pid
+                    break
+
+        data = by_place_id.get(place_id, {})
+        new_rec["address"]   = data.get("address")
+        new_rec["latitude"]  = data.get("latitude")
+        new_rec["longitude"] = data.get("longitude")
+        new_rec["photos"]    = data.get("photos") or _extract_photo_urls(rec.get("photos") or [])
 
         enriched_recs.append(new_rec)
 
@@ -712,36 +748,26 @@ Review excerpts:
 
     return parsed
 
-# -----------------------------
-# -- RENDER SMALL MAP FOR EACH RECOMMENDATION --
+# ─────────────────────────────────────────────
+# MAP RENDERER
+# ─────────────────────────────────────────────
 def render_small_map(lat, lon, restaurant_name="Restaurant"):
     lat = float(lat)
     lon = float(lon)
-
-    df = pd.DataFrame([{
-        "lat": lat,
-        "lon": lon,
-        "name": restaurant_name
-    }])
-
+    df = pd.DataFrame([{"lat": lat, "lon": lon, "name": restaurant_name}])
     st.pydeck_chart(
         pdk.Deck(
-            map_style=None,
-            initial_view_state=pdk.ViewState(
-                latitude=lat,
-                longitude=lon,
-                zoom=13,
-                pitch=0,
-            ),
+            map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+            initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=13, pitch=0),
             layers=[
                 pdk.Layer(
                     "ScatterplotLayer",
                     data=df,
                     get_position='[lon, lat]',
                     get_radius=80,
-                    get_fill_color=[255, 0, 0, 200],
+                    get_fill_color=[255, 122, 53, 220],
                     stroked=True,
-                    get_line_color=[0, 0, 0, 200],
+                    get_line_color=[240, 235, 228, 180],
                     line_width_min_pixels=1,
                     pickable=True,
                 )
@@ -750,130 +776,714 @@ def render_small_map(lat, lon, restaurant_name="Restaurant"):
         ),
         height=180,
     )
-# -----------------------------
-# RENDER RECOMMENDATIONS
-# -----------------------------
-def render_recommendations(recs):
 
-    for r in recs:
 
-        restaurant_name = r.get("restaurant")
-        if not restaurant_name:
-            restaurant_name = "No relevant restaurants"
-        st.subheader(restaurant_name)
+# ─────────────────────────────────────────────
+# GLOBAL CSS — "The Curated Hearth" Design System
+# ─────────────────────────────────────────────
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Be+Vietnam+Pro:ital,wght@0,400;0,500;0,600;1,400&display=swap');
 
-        dish = r.get("dish")
-        if dish:
-            st.write(f"**Recommended dish:** {dish}")
+        /* ── Design Tokens — Dark Mode ── */
+        :root {
+            --primary:          #ff7a35;
+            --primary-light:    #ffab76;
+            --bg:               #1a1714;
+            --surface-low:      #231f1b;
+            --surface-lowest:   #2d2824;
+            --gold:             #c4a560;
+            --on-surface:       #f0ebe4;
+            --muted:            #9a9088;
+            --shadow:           rgba(0, 0, 0, 0.35);
+            --ghost-border:     rgba(255, 122, 53, 0.18);
+            --font-display:     'Plus Jakarta Sans', sans-serif;
+            --font-body:        'Be Vietnam Pro', sans-serif;
+        }
 
-        st.write(r.get("description", ""))
+        /* ── Base ── */
+        html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+            background-color: var(--bg) !important;
+            font-family: var(--font-body) !important;
+            color: var(--on-surface) !important;
+        }
 
-        excerpt = r.get("review_excerpt")
-        if excerpt:
-            st.caption(f"🗣️ Review Excerpt: \"{excerpt}\"")
+        /* ── Remove Streamlit chrome clutter ── */
+        #MainMenu, footer, header { visibility: hidden; }
+        .block-container { padding-top: 2rem !important; max-width: 960px; }
 
-        why = r.get("why_this_was_selected")
-        if why:
-            st.caption(f"💡 Explanation: {why}")
+        /* ── Typography helpers ── */
+        .headline-lg {
+            font-family: var(--font-display);
+            font-size: 1.75rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--on-surface);
+            margin: 0 0 0.25rem 0;
+            line-height: 1.2;
+        }
+        .headline-md {
+            font-family: var(--font-display);
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--on-surface);
+            margin: 0 0 0.15rem 0;
+        }
+        .label-sm-caps {
+            font-family: var(--font-body);
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--gold);
+            display: block;
+            margin-bottom: 0.35rem;
+        }
+        .body-text {
+            font-family: var(--font-body);
+            font-size: 0.95rem;
+            line-height: 1.65;
+            color: var(--on-surface);
+        }
+        .muted-text {
+            font-family: var(--font-body);
+            font-size: 0.82rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
 
-        photos = r.get("photos", [])
-        cols = st.columns(len(photos)) if photos else []
+        /* ── Wordmark ── */
+        .wordmark {
+            font-family: var(--font-display);
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            letter-spacing: -0.02em;
+            margin-bottom: 0.15rem;
+        }
+        .tagline {
+            font-family: var(--font-body);
+            font-size: 0.88rem;
+            color: var(--muted);
+        }
 
-        for i, photo in enumerate(photos):
-            with cols[i]:
+        /* ── Cards ── */
+        .rec-card {
+            background: var(--surface-lowest);
+            border-radius: 1.5rem;
+            overflow: hidden;
+            margin-bottom: 2rem;
+            box-shadow:
+                0 2px 8px var(--shadow),
+                0 12px 40px rgba(57, 56, 52, 0.04);
+        }
+        .rec-card-body { padding: 1.25rem 1.4rem 1.4rem; }
+        .bleed-img {
+            width: 100%;
+            height: 220px;
+            object-fit: cover;
+            display: block;
+        }
+        .bleed-img-placeholder {
+            width: 100%;
+            height: 100px;
+            background: linear-gradient(135deg, #3a2e26 0%, #2d2420 100%);
+        }
+
+        /* ── Blockquote excerpt ── */
+        .blockquote-excerpt {
+            border-left: 3px solid rgba(172, 67, 0, 0.3);
+            padding: 0.6rem 0 0.6rem 1rem;
+            margin: 0.85rem 0;
+            font-style: italic;
+            font-size: 0.9rem;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        /* ── Address row ── */
+        .address-row {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+
+        /* ── Tabs ── */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.5rem;
+            border-bottom: 1px solid var(--ghost-border) !important;
+            background: transparent !important;
+        }
+        .stTabs [data-baseweb="tab"] {
+            font-family: var(--font-display) !important;
+            font-size: 0.92rem !important;
+            font-weight: 500 !important;
+            color: var(--muted) !important;
+            background: transparent !important;
+            border: none !important;
+            padding: 0.6rem 1.1rem !important;
+            border-radius: 0 !important;
+        }
+        .stTabs [aria-selected="true"] {
+            color: var(--primary) !important;
+            border-bottom: 2px solid var(--primary) !important;
+            font-weight: 600 !important;
+        }
+        .stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+        .stTabs [data-baseweb="tab-border"]    { display: none !important; }
+
+        /* ── Buttons ── */
+        .primary-action .stButton > button {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%) !important;
+            color: #fffbff !important;
+            border: none !important;
+            border-radius: 9999px !important;
+            padding: 0.45rem 1.2rem !important;
+            font-family: var(--font-body) !important;
+            font-weight: 600 !important;
+            font-size: 0.85rem !important;
+            box-shadow: 0 4px 16px rgba(172, 67, 0, 0.25) !important;
+            transition: opacity 0.15s ease !important;
+        }
+        .primary-action .stButton > button:hover { opacity: 0.88 !important; }
+
+        .secondary-action .stButton > button {
+            background: var(--surface-lowest) !important;
+            color: var(--primary) !important;
+            border: none !important;
+            border-radius: 9999px !important;
+            padding: 0.45rem 1.2rem !important;
+            font-family: var(--font-body) !important;
+            font-weight: 500 !important;
+            font-size: 0.85rem !important;
+            box-shadow: 0 1px 4px var(--shadow) !important;
+            transition: background 0.15s ease !important;
+        }
+        .secondary-action .stButton > button:hover { background: #3d3530 !important; }
+
+        .danger-action .stButton > button {
+            background: transparent !important;
+            color: #b00020 !important;
+            border: none !important;
+            border-radius: 9999px !important;
+            padding: 0.45rem 1rem !important;
+            font-family: var(--font-body) !important;
+            font-size: 0.82rem !important;
+        }
+        .danger-action .stButton > button:hover { background: rgba(176, 0, 32, 0.06) !important; }
+
+        .tertiary-action .stButton > button {
+            background: transparent !important;
+            color: var(--muted) !important;
+            border: none !important;
+            font-family: var(--font-body) !important;
+            font-size: 0.82rem !important;
+            padding: 0.3rem 0.6rem !important;
+            text-decoration: underline !important;
+        }
+
+        /* ── Fixed clear button (bottom-left of chat input) ── */
+        .clear-fixed-btn .stButton > button {
+            position: fixed !important;
+            bottom: 1rem !important;
+            left: max(1rem, calc(50% - 472px)) !important;
+            z-index: 10000 !important;
+            background: rgba(35, 31, 27, 0.92) !important;
+            color: var(--muted) !important;
+            border: 1px solid var(--ghost-border) !important;
+            border-radius: 9999px !important;
+            font-family: var(--font-body) !important;
+            font-size: 0.78rem !important;
+            padding: 0.4rem 0.9rem !important;
+            white-space: nowrap !important;
+            backdrop-filter: blur(8px) !important;
+            transition: color 0.15s ease, border-color 0.15s ease !important;
+        }
+        .clear-fixed-btn .stButton > button:hover {
+            color: var(--primary) !important;
+            border-color: rgba(255, 122, 53, 0.4) !important;
+        }
+
+        /* ── Chat messages ── */
+        .stChatMessage { background: transparent !important; border: none !important; }
+        [data-testid="stChatMessageContent"] {
+            background: var(--surface-low) !important;
+            border-radius: 1rem !important;
+            padding: 0.75rem 1rem !important;
+            color: var(--on-surface) !important;
+        }
+
+        /* ── Chat input container (fixed at bottom) ── */
+        [data-testid="stBottom"] {
+            background-color: var(--bg) !important;
+        }
+        [data-testid="stBottom"] > div {
+            background-color: var(--bg) !important;
+            padding-left: 110px !important;
+        }
+
+        /* ── Bottom padding so last message isn't hidden behind fixed bar ── */
+        .block-container {
+            padding-bottom: 6rem !important;
+        }
+        [data-testid="stChatInput"] {
+            background-color: var(--surface-low) !important;
+            border-radius: 1rem !important;
+            border: 1.5px solid var(--ghost-border) !important;
+        }
+        [data-testid="stChatInput"] textarea {
+            background: var(--surface-low) !important;
+            color: var(--on-surface) !important;
+            border-radius: 1rem !important;
+            border: none !important;
+            font-family: var(--font-body) !important;
+        }
+        [data-testid="stChatInput"] textarea:focus {
+            box-shadow: none !important;
+        }
+        [data-testid="stChatInput"] textarea::placeholder {
+            color: var(--muted) !important;
+        }
+
+        /* ── Text inputs ── */
+        .stTextInput > div > div > input,
+        .stTextArea > div > div > textarea {
+            background: var(--surface-low) !important;
+            color: var(--on-surface) !important;
+            border-radius: 0.75rem !important;
+            border: 1.5px solid transparent !important;
+            font-family: var(--font-body) !important;
+        }
+        .stTextInput > div > div > input:focus,
+        .stTextArea > div > div > textarea:focus {
+            border-color: var(--ghost-border) !important;
+            box-shadow: none !important;
+        }
+        .stTextInput > div > div > input::placeholder,
+        .stTextArea > div > div > textarea::placeholder {
+            color: var(--muted) !important;
+        }
+
+        /* ── Sidebar glassmorphism (dark) ── */
+        [data-testid="stSidebar"] {
+            background: rgba(35, 31, 27, 0.88) !important;
+            backdrop-filter: blur(28px) !important;
+            border-right: 1px solid var(--ghost-border) !important;
+        }
+
+        /* ── Progress bar ── */
+        .stProgress > div > div { background-color: var(--primary) !important; }
+
+        /* ── Score badge ── */
+        .score-badge {
+            display: inline-block;
+            background: var(--surface-lowest);
+            border-radius: 0.5rem;
+            padding: 0.2rem 0.5rem;
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1rem;
+            color: var(--primary);
+        }
+
+        /* ── Empty state ── */
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--muted);
+        }
+        .empty-state p {
+            font-family: var(--font-body);
+            font-size: 1rem;
+            color: var(--muted);
+            max-width: 320px;
+            margin: 0 auto;
+            line-height: 1.6;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ─────────────────────────────────────────────
+# UI HELPERS
+# ─────────────────────────────────────────────
+_PIN_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff7a35" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>'
+
+
+def _empty_state(message: str):
+    st.markdown(
+        f'<div class="empty-state"><p>{message}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _star_display(rating: int) -> str:
+    filled = "&#9733;" * rating
+    empty = "&#9734;" * (5 - rating)
+    return f'<span style="color:var(--gold);font-size:1rem">{filled}{empty}</span>'
+
+
+def _rec_card_html(rec: dict) -> str:
+    restaurant = rec.get("restaurant") or "Unknown Restaurant"
+    dish        = rec.get("dish", "")
+    description = rec.get("description", "")
+    excerpt     = rec.get("review_excerpt", "")
+    why         = rec.get("why_this_was_selected", "")
+    address     = rec.get("address") or "Address not available"
+    photos      = rec.get("photos") or []
+
+    first_photo = photos[0] if photos else ""
+    img_html = (
+        f'<img class="bleed-img" src="{first_photo}" alt="{restaurant}" />'
+        if first_photo else
+        '<div class="bleed-img-placeholder"></div>'
+    )
+
+    excerpt_html = f'<blockquote class="blockquote-excerpt">"{excerpt}"</blockquote>' if excerpt else ""
+    why_html     = f'<p class="muted-text" style="margin-top:0.5rem">{why}</p>' if why else ""
+    dish_html    = f'<p style="font-family:var(--font-body);font-weight:600;font-size:0.95rem;margin:0.25rem 0 0.5rem">{dish}</p>' if dish else ""
+
+    # No blank lines inside the HTML — blank lines terminate Streamlit's markdown HTML block
+    parts = [
+        f'<div class="rec-card">',
+        img_html,
+        '<div class="rec-card-body">',
+        '<span class="label-sm-caps">Critic\'s Pick</span>',
+        f'<p class="headline-md">{restaurant}</p>',
+        dish_html,
+        f'<p class="body-text">{description}</p>',
+        excerpt_html,
+        why_html,
+        f'<div class="address-row">{_PIN_SVG}<span>{address}</span></div>',
+        '</div>',
+        '</div>',
+    ]
+    return "".join(p for p in parts if p)
+
+
+# ─────────────────────────────────────────────
+# RENDER FUNCTIONS
+# ─────────────────────────────────────────────
+def render_recommendations(recs, context="chat"):
+    for i, rec in enumerate(recs):
+        st.markdown(_rec_card_html(rec), unsafe_allow_html=True)
+
+        lat = rec.get("latitude")
+        lon = rec.get("longitude")
+        if lat is not None and lon is not None:
+            render_small_map(lat, lon, restaurant_name=rec.get("restaurant", "Restaurant"))
+        else:
+            st.markdown('<p class="muted-text">Map not available for this location.</p>', unsafe_allow_html=True)
+
+        restaurant = rec.get("restaurant", "")
+        if restaurant:
+            col_a, col_b = st.columns([1, 1])
+            with col_a:
+                st.markdown('<div class="primary-action">', unsafe_allow_html=True)
+                if st.button("+ Want to Try", key=f"wtt_{context}_{i}"):
+                    if not any(e.get("restaurant") == restaurant for e in st.session_state.want_to_try):
+                        st.session_state.want_to_try.append(dict(rec))
+                        st.toast(f"Added {restaurant} to Want to Try!")
+                st.markdown("</div>", unsafe_allow_html=True)
+            with col_b:
+                st.markdown('<div class="secondary-action">', unsafe_allow_html=True)
+                if st.button("✓ Mark as Tried", key=f"tried_{context}_{i}"):
+                    entry = dict(rec)
+                    entry.setdefault("rating", 3)
+                    entry.setdefault("review_text", "")
+                    if not any(e.get("restaurant") == restaurant for e in st.session_state.already_tried):
+                        st.session_state.already_tried.append(entry)
+                        st.session_state.want_to_try = [
+                            e for e in st.session_state.want_to_try if e.get("restaurant") != restaurant
+                        ]
+                        st.toast(f"Moved {restaurant} to Already Tried!")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div style="height:1.5rem"></div>', unsafe_allow_html=True)
+
+
+def render_library_card(rec: dict, index: int):
+    st.markdown(_rec_card_html(rec), unsafe_allow_html=True)
+
+    lat = rec.get("latitude")
+    lon = rec.get("longitude")
+    if lat is not None and lon is not None:
+        render_small_map(lat, lon, restaurant_name=rec.get("restaurant", "Restaurant"))
+
+    restaurant = rec.get("restaurant", "")
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.markdown('<div class="primary-action">', unsafe_allow_html=True)
+        if st.button("✓ Mark as Tried", key=f"lib_tried_{index}"):
+            entry = dict(rec)
+            entry.setdefault("rating", 3)
+            entry.setdefault("review_text", "")
+            if not any(e.get("restaurant") == restaurant for e in st.session_state.already_tried):
+                st.session_state.already_tried.append(entry)
+            st.session_state.want_to_try.pop(index)
+            st.toast(f"Moved {restaurant} to Already Tried!")
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col_b:
+        st.markdown('<div class="danger-action">', unsafe_allow_html=True)
+        if st.button("Remove", key=f"lib_remove_{index}"):
+            st.session_state.want_to_try.pop(index)
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div style="height:1rem"></div>', unsafe_allow_html=True)
+
+
+def render_tried_card(rec: dict, index: int):
+    restaurant     = rec.get("restaurant", "Unknown")
+    existing_review = rec.get("review_text", "")
+    existing_rating = rec.get("rating", 3)
+
+    st.markdown(_rec_card_html(rec), unsafe_allow_html=True)
+
+    st.markdown('<span class="label-sm-caps">Your Rating</span>', unsafe_allow_html=True)
+    rating = st.select_slider(
+        "Rating",
+        options=[1, 2, 3, 4, 5],
+        value=existing_rating,
+        key=f"rating_{index}",
+        label_visibility="collapsed",
+    )
+    st.markdown(_star_display(rating), unsafe_allow_html=True)
+
+    if existing_review:
+        st.markdown(
+            f'<blockquote class="blockquote-excerpt">"{existing_review}"</blockquote>',
+            unsafe_allow_html=True,
+        )
+
+    btn_label = "Edit Review" if existing_review else "Write a Review"
+    is_open   = st.session_state.review_open.get(index, False)
+
+    st.markdown('<div class="secondary-action">', unsafe_allow_html=True)
+    if st.button(btn_label, key=f"toggle_review_{index}"):
+        st.session_state.review_open[index] = not is_open
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if st.session_state.review_open.get(index, False):
+        review_text = st.text_area(
+            "Your review",
+            value=existing_review,
+            placeholder=f"What did you think of {restaurant}? What did you order?",
+            key=f"review_input_{index}",
+            height=110,
+            label_visibility="collapsed",
+        )
+        st.markdown('<div class="primary-action">', unsafe_allow_html=True)
+        if st.button("Save Review", key=f"save_review_{index}"):
+            st.session_state.already_tried[index]["review_text"] = review_text
+            st.session_state.already_tried[index]["rating"] = rating
+            st.session_state.review_open[index] = False
+            st.toast(f"Review saved for {restaurant}!")
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div style="height:1rem"></div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# STREAMLIT APP
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="FoodFinder",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# Session state
+_defaults = {
+    "conversation_memory": [],
+    "recommended_restaurants": set(),
+    "last_user_query": None,
+    "last_docs_for_llm": None,
+    "last_parsed_recommendations": None,
+    "last_metric_row_id": None,
+    "last_docs": None,
+    "want_to_try": [],
+    "already_tried": [],
+    "review_open": {},
+    "judge_scores": None,
+}
+for _k, _v in _defaults.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+inject_css()
+
+# Wordmark
+st.markdown(
+    """
+    <div style="margin-bottom:1.5rem">
+        <p class="wordmark">FoodFinder</p>
+        <p class="tagline">AI-powered restaurant recommendations, grounded in real reviews.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Fixed bottom: clear button + chat input ──
+st.markdown('<div class="clear-fixed-btn">', unsafe_allow_html=True)
+if st.button("Clear conversation", key="clear_history"):
+    st.session_state.conversation_memory = []
+    st.session_state.recommended_restaurants = set()
+    st.session_state.judge_scores = None
+    st.rerun()
+st.markdown("</div>", unsafe_allow_html=True)
+
+user_query = st.chat_input("What kind of food or drink are you looking for?")
+if user_query:
+    with st.spinner("Analysing reviews..."):
+        recs = run_rag(user_query)
+
+tab1, tab2, tab3 = st.tabs(["Discover", "Want to Try", "Already Tried"])
+
+# ── Tab 1: Discover ──────────────────────────
+with tab1:
+    with st.sidebar:
+        st.markdown('<span class="label-sm-caps">Evaluation</span>', unsafe_allow_html=True)
+        st.markdown('<div class="primary-action">', unsafe_allow_html=True)
+        run_judge = st.button("Run Judge on Last Result", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if run_judge:
+            if (
+                st.session_state.last_user_query is not None
+                and st.session_state.last_docs_for_llm is not None
+                and st.session_state.last_parsed_recommendations is not None
+                and st.session_state.last_metric_row_id is not None
+            ):
+                with st.spinner("Running evaluation..."):
+                    judge_results = evaluate_with_llm_judge(
+                        st.session_state.last_user_query,
+                        st.session_state.last_docs_for_llm,
+                        st.session_state.last_parsed_recommendations,
+                    )
+                    updated = update_judge_metrics(
+                        st.session_state.last_metric_row_id,
+                        judge_results,
+                    )
+                st.session_state.judge_scores = judge_results
+                if updated:
+                    st.success("Scores saved.")
+                else:
+                    st.error("Could not save scores.")
+            else:
+                st.warning("No result available to judge yet.")
+
+        scores = st.session_state.judge_scores
+        if scores:
+            st.markdown('<div style="height:1rem"></div>', unsafe_allow_html=True)
+            for label, key in [
+                ("Relevance",    "judge_relevance_score"),
+                ("Groundedness", "judge_groundedness_score"),
+                ("Helpfulness",  "judge_helpfulness_score"),
+                ("Overall",      "judge_overall_score"),
+            ]:
+                val = scores.get(key)
+                if val is not None:
+                    col_l, col_r = st.columns([3, 1])
+                    with col_l:
+                        st.markdown(f'<span class="muted-text">{label}</span>', unsafe_allow_html=True)
+                        st.progress(int(val) / 5)
+                    with col_r:
+                        st.markdown(f'<span class="score-badge">{val}</span>', unsafe_allow_html=True)
+            notes = scores.get("judge_notes")
+            if notes:
                 st.markdown(
-                    f"""
-                    <img src=\"{photo}\" style=\"width: 100%; max-width: 300px; max-height: 300px; object-fit: cover; border-radius: 8px;\" />
-                    """,
+                    f'<p class="muted-text" style="margin-top:0.75rem;font-style:italic">{notes}</p>',
                     unsafe_allow_html=True,
                 )
 
-        address = r.get("address")
-        if address:
-            st.write(f"**Address:** {address}")
-        else:
-            st.write("**Address:** Not available")
+    if not st.session_state.conversation_memory and not user_query:
+        st.markdown(
+            """
+            <div class="empty-state" style="padding:3rem 1rem 1rem">
+                <p class="headline-lg" style="text-align:center;color:var(--primary)">Where to tonight?</p>
+                <p style="text-align:center;color:var(--muted);font-family:var(--font-body);margin-top:0.5rem">
+                    Try asking: <em>"Best ramen in the city"</em> or <em>"Great rooftop bar with cocktails"</em>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        lat = r.get("latitude")
-        lon = r.get("longitude")
+    for msg in st.session_state.conversation_memory:
+        with st.chat_message("user"):
+            st.markdown(f'<p class="body-text">{msg["user"]}</p>', unsafe_allow_html=True)
+        with st.chat_message("assistant"):
+            render_recommendations(msg["assistant"], context=f"hist_{id(msg)}")
 
-        if lat is not None and lon is not None:
-            st.write("📍 Location")
-            render_small_map(lat, lon, restaurant_name=restaurant_name)
-        else:
-            st.caption("Map not available for this restaurant.")
-
-# -----------------------------
-# STREAMLIT UI
-# -----------------------------
-st.set_page_config(page_title="FoodFinder - Your friend for finding great food and drinks", layout="wide")
-
-st.title("🍽️ FoodFinder - Your friend for finding great food and drinks!")
-st.write("Ask for restaurant recommendations based on real reviews.")
-
-if st.button("Clear history"):
-    st.session_state.conversation_memory = []
-    st.session_state.recommended_restaurants = set()
-    st.rerun()
+    if user_query:
+        with st.chat_message("user"):
+            st.markdown(f'<p class="body-text">{user_query}</p>', unsafe_allow_html=True)
+        with st.chat_message("assistant"):
+            render_recommendations(recs, context="new")
 
 
-# -----------------------------
-# DISPLAY CHAT HISTORY
-# -----------------------------
-for msg in st.session_state.conversation_memory:
-
-    with st.chat_message("user"):
-        st.write(msg["user"])
-
-    with st.chat_message("assistant"):
-        render_recommendations(msg["assistant"])
-
-
-# -----------------------------
-# OPTIONAL LLM-AS-A-JUDGE
-# -----------------------------
-st.sidebar.subheader("Evaluation")
-
-if st.sidebar.button("Run judge on last result"):
-    if (
-        st.session_state.last_user_query is not None
-        and st.session_state.last_docs_for_llm is not None
-        and st.session_state.last_parsed_recommendations is not None
-        and st.session_state.last_metric_row_id is not None
-    ):
-        with st.spinner("Running judge evaluation..."):
-            judge_results = evaluate_with_llm_judge(
-                st.session_state.last_user_query,
-                st.session_state.last_docs_for_llm,
-                st.session_state.last_parsed_recommendations
-            )
-            updated = update_judge_metrics(
-                st.session_state.last_metric_row_id,
-                judge_results
-            )
-
-        if updated:
-            st.sidebar.success("Judge metrics saved.")
-        else:
-            st.sidebar.error("Judge metrics could not be saved.")
+# ── Tab 2: Want to Try ───────────────────────
+with tab2:
+    st.markdown(
+        """
+        <div style="margin-bottom:1.5rem">
+            <span class="label-sm-caps">Your List</span>
+            <p class="headline-lg">Want to Try</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    want_list = st.session_state.want_to_try
+    if not want_list:
+        _empty_state("Nothing saved yet — start a conversation in Discover to find somewhere new.")
     else:
-        st.sidebar.warning("No recent result is available to judge.")
+        search = st.text_input(
+            "Search",
+            placeholder="Filter by restaurant or dish...",
+            key="wtt_search",
+            label_visibility="collapsed",
+        )
+        filtered = [
+            r for r in want_list
+            if not search or search.lower() in (r.get("restaurant", "") + r.get("dish", "")).lower()
+        ]
+        if not filtered:
+            _empty_state(f'No results matching "{search}".')
+        else:
+            col1, col2 = st.columns(2, gap="large")
+            for i, rec in enumerate(filtered):
+                real_idx = want_list.index(rec)
+                with (col1 if i % 2 == 0 else col2):
+                    render_library_card(rec, real_idx)
 
-# -----------------------------
-# USER INPUT
-# -----------------------------
-user_query = st.chat_input("What kind of food or drink are you looking for?")
 
-if user_query:
-
-    with st.chat_message("user"):
-        st.write(user_query)
-
-    with st.spinner("Analyzing reviews..."):
-        recs = run_rag(user_query)
-
-    with st.chat_message("assistant"):
-        render_recommendations(recs)
-
-
+# ── Tab 3: Already Tried ─────────────────────
+with tab3:
+    st.markdown(
+        """
+        <div style="margin-bottom:1.5rem">
+            <span class="label-sm-caps">Your Reviews</span>
+            <p class="headline-lg">Already Tried</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    tried_list = st.session_state.already_tried
+    if not tried_list:
+        _empty_state("No restaurants tried yet — go explore and mark something as tried!")
+    else:
+        for i, rec in enumerate(tried_list):
+            render_tried_card(rec, i)
 
