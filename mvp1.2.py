@@ -470,7 +470,8 @@ def similarity_search(query_text, k=20):
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
             FROM review_photos rp
-            WHERE rp.place_id = rc.place_id
+            WHERE (rp.place_id = rc.place_id
+            and rp.review_id = rc.review_id)
             LIMIT 5
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
