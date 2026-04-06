@@ -1543,12 +1543,6 @@ with tab1:
         with st.chat_message("assistant"):
             render_recommendations(msg["assistant"], context=f"hist_{id(msg)}")
 
-    if user_query:
-        with st.chat_message("user"):
-            st.markdown(f'<p class="body-text">{user_query}</p>', unsafe_allow_html=True)
-        with st.chat_message("assistant"):
-            render_recommendations(recs, context="new")
-
 
 # ── Tab 2: Want to Try ───────────────────────
 with tab2:
