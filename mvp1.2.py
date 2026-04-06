@@ -11,6 +11,8 @@ import pandas as pd
 import re
 import pydeck as pdk
 import time
+from time import monotonic
+from collections import deque
 
 load_dotenv()
 
@@ -55,6 +57,47 @@ def geocode_address(address):
         print("Geocoding error:", e)
     return None, None
 
+
+# -----------------------------
+# SESSION RATE LIMITING
+# -----------------------------
+RATE_LIMIT_MAX_REQUESTS = 5      # allow up to 5 requests
+RATE_LIMIT_WINDOW_SEC = 60       # per 60 seconds
+RATE_LIMIT_COOLDOWN_SEC = 8      # minimum gap between requests
+
+def init_rate_limit_state():
+    if "request_timestamps" not in st.session_state:
+        st.session_state.request_timestamps = deque()
+    if "last_request_time" not in st.session_state:
+        st.session_state.last_request_time = 0.0
+
+def check_rate_limit():
+    """
+    Returns (allowed: bool, message: str | None)
+    """
+    init_rate_limit_state()
+
+    now = monotonic()
+
+    # Short cooldown to prevent double submits / spam clicks
+    elapsed = now - st.session_state.last_request_time
+    if elapsed < RATE_LIMIT_COOLDOWN_SEC:
+        wait_for = int(RATE_LIMIT_COOLDOWN_SEC - elapsed) + 1
+        return False, f"Please wait about {wait_for} seconds before sending another request."
+
+    # Sliding window limit
+    timestamps = st.session_state.request_timestamps
+    while timestamps and (now - timestamps[0]) > RATE_LIMIT_WINDOW_SEC:
+        timestamps.popleft()
+
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        wait_for = int(RATE_LIMIT_WINDOW_SEC - (now - timestamps[0])) + 1
+        return False, f"Rate limit reached. Please wait about {wait_for} seconds and try again."
+
+    # Reserve the slot now
+    timestamps.append(now)
+    st.session_state.last_request_time = now
+    return True, None
 # -----------------------------
 # JSON Formatting Helpers
 import json
@@ -1461,9 +1504,16 @@ if st.button("Clear conversation", key="clear_history"):
 st.markdown("</div>", unsafe_allow_html=True)
 
 user_query = st.chat_input("What kind of food or drink are you looking for?")
+recs = None
+
 if user_query:
-    with st.spinner("Analysing reviews..."):
-        recs = run_rag(user_query)
+    allowed, rate_limit_message = check_rate_limit()
+
+    if not allowed:
+        st.warning(rate_limit_message)
+    else:
+        with st.spinner("Analysing reviews..."):
+            recs = run_rag(user_query)
 
 tab1, tab2, tab3 = st.tabs(["Discover", "Want to Try", "Already Tried"])
 
