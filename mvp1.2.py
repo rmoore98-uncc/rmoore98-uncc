@@ -156,6 +156,68 @@ def parse_recommendations(answer):
     }], False
 
 # -----------------------------
+# MODERATION
+# -----------------------------
+def _to_plain_dict(obj):
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "__dict__"):
+        return vars(obj)
+    return {}
+
+
+def moderate_text(text):
+    """Moderate user input or model output."""
+    try:
+        response = client.moderations.create(
+            model="omni-moderation-latest",
+            input=text
+        )
+
+        result = response.results[0]
+        return {
+            "flagged": bool(getattr(result, "flagged", False)),
+            "categories": _to_plain_dict(getattr(result, "categories", {})),
+            "category_scores": _to_plain_dict(getattr(result, "category_scores", {})),
+        }
+    except Exception as e:
+        print("Moderation error:", e)
+        return {
+            "flagged": False,
+            "categories": {},
+            "category_scores": {},
+            "error": str(e),
+        }
+
+
+def build_moderation_block_message(moderation_result, stage="input"):
+    categories = moderation_result.get("categories", {}) or {}
+    blocked_categories = [k for k, v in categories.items() if v]
+    category_text = ", ".join(blocked_categories) if blocked_categories else "policy-sensitive content"
+
+    if stage == "input":
+        description = (
+            f"I can’t process that request because it was flagged by moderation "
+            f"({category_text}). Please rephrase and try again."
+        )
+    else:
+        description = "I couldn’t return a safe response for that request. Please try rephrasing."
+
+    return [{
+        "restaurant": "",
+        "dish": "",
+        "description": description,
+        "review_excerpt": "",
+        "why_this_was_selected": "",
+        "photos": []
+    }]
+
+
+# -----------------------------
 # LLM as a Judge
 def evaluate_with_llm_judge(user_query, docs_for_llm, parsed_recommendations):
     """
@@ -602,6 +664,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 def run_rag(user_query):
     """
     Main RAG function:
+    - Moderates user input before retrieval/generation
     - Performs similarity search
     - Returns recommendations or fallback if no relevant reviews
     - Inserts base evaluation metrics immediately
@@ -609,6 +672,44 @@ def run_rag(user_query):
     - Always appends the result to conversation memory
     """
     total_start = time.time()
+
+    input_moderation = moderate_text(user_query)
+    if input_moderation.get("flagged"):
+        blocked = build_moderation_block_message(input_moderation, stage="input")
+
+        metric_row = {
+            "user_query": user_query,
+            "retrieved_doc_count": 0,
+            "avg_distance": None,
+            "retrieval_time_ms": 0,
+            "generation_time_ms": 0,
+            "embedding_input_tokens": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "llm_total_tokens": 0,
+            "json_valid": True,
+            "fallback_used": True,
+            "raw_output": json.dumps({
+                "type": "moderation_block",
+                "stage": "input",
+                "moderation": input_moderation,
+                "response": blocked
+            }, default=str)
+        }
+
+        metric_row_id = insert_evaluation_metric(metric_row)
+
+        st.session_state.last_user_query = user_query
+        st.session_state.last_docs_for_llm = []
+        st.session_state.last_parsed_recommendations = blocked
+        st.session_state.last_metric_row_id = metric_row_id
+
+        st.session_state.conversation_memory.append({
+            "user": user_query,
+            "assistant": blocked
+        })
+
+        return blocked
 
     memory_context = build_memory_context()
 
@@ -645,7 +746,7 @@ def run_rag(user_query):
             "llm_total_tokens": llm_total_tokens,
             "json_valid": True,
             "fallback_used": True,
-            "raw_output": json.dumps(fallback)
+            "raw_output": json.dumps(fallback, default=str)
         }
 
         metric_row_id = insert_evaluation_metric(metric_row)
@@ -716,7 +817,21 @@ Review excerpts:
 
     answer = response.choices[0].message.content or ""
 
-    parsed, json_valid = parse_recommendations(answer)
+    output_moderation = moderate_text(answer)
+    if output_moderation.get("flagged"):
+        parsed = build_moderation_block_message(output_moderation, stage="output")
+        json_valid = True
+        raw_output_for_db = {
+            "type": "moderation_block",
+            "stage": "output",
+            "moderation": output_moderation,
+            "raw_model_output": answer,
+            "response": parsed
+        }
+    else:
+        parsed, json_valid = parse_recommendations(answer)
+        raw_output_for_db = parsed
+
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
 
     metric_row = {
@@ -731,7 +846,7 @@ Review excerpts:
         "llm_total_tokens": llm_total_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
-        "raw_output": json.dumps(parsed)
+        "raw_output": json.dumps(raw_output_for_db, default=str)
     }
 
     metric_row_id = insert_evaluation_metric(metric_row)
