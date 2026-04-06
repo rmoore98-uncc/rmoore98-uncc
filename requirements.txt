@@ -5,5 +5,3 @@ psycopg2-binary
 geopy
 pandas
 pydeck
-collections
-time
