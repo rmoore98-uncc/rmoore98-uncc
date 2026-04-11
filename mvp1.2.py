@@ -11,7 +11,7 @@ import pandas as pd
 import re
 import pydeck as pdk
 import time
-from langsmith import wrap_openai, traceable, Client as LangSmithClient
+from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
 
 load_dotenv()
@@ -19,7 +19,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = wrap_openai(OpenAI(api_key=OPENAI_API_KEY))
+client = OpenAI(api_key=OPENAI_API_KEY)
 langsmith_client = LangSmithClient()
 
 # -----------------------------
