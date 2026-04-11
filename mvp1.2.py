@@ -11,13 +11,16 @@ import pandas as pd
 import re
 import pydeck as pdk
 import time
+from langsmith import wrap_openai, traceable, Client as LangSmithClient
+from langsmith.run_helpers import get_current_run_tree
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = wrap_openai(OpenAI(api_key=OPENAI_API_KEY))
+langsmith_client = LangSmithClient()
 
 # -----------------------------
 # GEOCODING (Address → Lat/Lon)
@@ -157,6 +160,7 @@ def parse_recommendations(answer):
 
 # -----------------------------
 # LLM as a Judge
+@traceable(name="llm-judge", run_type="llm")
 def evaluate_with_llm_judge(user_query, docs_for_llm, parsed_recommendations):
     """
     Uses a second LLM call to score the quality of the generated recommendations.
@@ -381,6 +385,7 @@ def update_judge_metrics(row_id, judge_results):
 # -----------------------------
 # VECTOR SEARCH
 # -----------------------------
+@traceable(name="vector-search", run_type="retriever")
 def similarity_search(query_text, k=20):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
@@ -599,6 +604,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
+@traceable(name="food-recommendation-pipeline", run_type="chain")
 def run_rag(user_query):
     """
     Main RAG function:
@@ -609,6 +615,10 @@ def run_rag(user_query):
     - Always appends the result to conversation memory
     """
     total_start = time.time()
+
+    run_tree = get_current_run_tree()
+    if run_tree:
+        st.session_state.last_langsmith_run_id = str(run_tree.id)
 
     memory_context = build_memory_context()
 
@@ -1376,6 +1386,24 @@ with tab1:
                         st.session_state.last_metric_row_id,
                         judge_results,
                     )
+                    if st.session_state.get("last_langsmith_run_id"):
+                        try:
+                            for score_key, label in [
+                                ("judge_relevance_score",    "relevance"),
+                                ("judge_groundedness_score", "groundedness"),
+                                ("judge_helpfulness_score",  "helpfulness"),
+                                ("judge_overall_score",      "overall"),
+                            ]:
+                                val = judge_results.get(score_key)
+                                if val is not None:
+                                    langsmith_client.create_feedback(
+                                        run_id=st.session_state.last_langsmith_run_id,
+                                        key=label,
+                                        score=val / 5,
+                                        comment=judge_results.get("judge_notes", ""),
+                                    )
+                        except Exception:
+                            pass
                 st.session_state.judge_scores = judge_results
                 if updated:
                     st.success("Scores saved.")
