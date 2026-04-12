@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool
 import os
 import json
 from geopy.geocoders import Nominatim
@@ -13,13 +14,14 @@ import pydeck as pdk
 import time
 from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
+from langsmith.wrappers import wrap_openai
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = wrap_openai(OpenAI(api_key=OPENAI_API_KEY))
 langsmith_client = LangSmithClient()
 
 # -----------------------------
@@ -271,16 +273,30 @@ if "last_metric_row_id" not in st.session_state:
     st.session_state.last_metric_row_id = None
 
 # -----------------------------
-# DB CONNECTION
+# DB CONNECTION POOL
+# Shared pool prevents SSL drops and connection exhaustion under concurrent load.
 # -----------------------------
-def get_connection():
-    return psycopg2.connect(
-        user="postgres.teyeutbzecbobotobhzc",
-        password=DB_PASSWORD,
-        host="aws-0-us-west-2.pooler.supabase.com",
-        port=6543,
-        dbname="postgres",
-    )
+connection_pool = pool.ThreadedConnectionPool(
+    minconn=2,
+    maxconn=10,
+    user="postgres.teyeutbzecbobotobhzc",
+    password=DB_PASSWORD,
+    host="aws-0-us-west-2.pooler.supabase.com",
+    port=6543,
+    dbname="postgres",
+)
+
+def get_connection(retries=10, delay=0.5):
+    for i in range(retries):
+        try:
+            return connection_pool.getconn()
+        except pool.PoolError:
+            if i < retries - 1:
+                time.sleep(delay)
+    raise Exception("connection pool exhausted after retries")
+
+def release_connection(conn):
+    connection_pool.putconn(conn)
 
 # -----------------------------
 # EVALUATION METRICS LOGGING
@@ -340,7 +356,7 @@ def insert_evaluation_metric(metric_row):
         if cur:
             cur.close()
         if conn:
-            conn.close()
+            release_connection(conn)
 
 
 def update_judge_metrics(row_id, judge_results):
@@ -380,7 +396,7 @@ def update_judge_metrics(row_id, judge_results):
         if cur:
             cur.close()
         if conn:
-            conn.close()
+            release_connection(conn)
 
 # -----------------------------
 # VECTOR SEARCH
@@ -426,7 +442,7 @@ def similarity_search(query_text, k=20):
     rows = cur.fetchall()
 
     cur.close()
-    conn.close()
+    release_connection(conn)
 
     return rows, embedding_input_tokens
 # ------------------------------
@@ -446,18 +462,22 @@ def enrich_with_location(rows):
 
     if place_ids:
         cur.execute("""
-            SELECT place_id, address
+            SELECT place_id, address, latitude, longitude
             FROM place_table
             WHERE place_id = ANY(%s)
         """, (place_ids,))
 
         address_map = {
-            r["place_id"]: r["address"]
+            r["place_id"]: {
+                "address": r["address"],
+                "latitude": r["latitude"],
+                "longitude": r["longitude"],
+            }
             for r in cur.fetchall()
         }
 
     cur.close()
-    conn.close()
+    release_connection(conn)
 
     # ⚠️ IMPORTANT: create a NEW list (don’t mutate original)
     enriched = []
@@ -465,23 +485,10 @@ def enrich_with_location(rows):
     for row in rows:
         new_row = dict(row)  # copy
 
-        address = address_map.get(row.get("place_id"))
-        new_row["address"] = address
-
-        # optional geocoding
-        new_row["latitude"] = None
-        new_row["longitude"] = None
-
-        if address:
-            normalized_address = normalize_address_for_geocoding(address)
-            lat, lon = geocode_address(normalized_address)
-
-        if lat is None or lon is None:
-            fallback_address = strip_suite(normalized_address)
-            lat, lon = geocode_address(fallback_address)
-
-        new_row["latitude"] = lat
-        new_row["longitude"] = lon
+        data = address_map.get(row.get("place_id"), {})
+        new_row["address"] = data.get("address")
+        new_row["latitude"] = data.get("latitude")
+        new_row["longitude"] = data.get("longitude")
 
         enriched.append(new_row)
 
@@ -1449,7 +1456,8 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-    for msg in st.session_state.conversation_memory:
+    history = st.session_state.conversation_memory[:-1] if user_query else st.session_state.conversation_memory
+    for msg in history:
         with st.chat_message("user"):
             st.markdown(f'<p class="body-text">{msg["user"]}</p>', unsafe_allow_html=True)
         with st.chat_message("assistant"):
