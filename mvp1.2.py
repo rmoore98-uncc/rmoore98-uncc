@@ -523,7 +523,7 @@ def update_judge_metrics(row_id, judge_results):
 # VECTOR SEARCH
 # -----------------------------
 @traceable(name="vector-search", run_type="retriever")
-def similarity_search(query_text, k=20):
+def similarity_search(query_text, k=20, exclude_review_ids=None):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
         input=query_text
@@ -556,11 +556,13 @@ def similarity_search(query_text, k=20):
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
         AND rc.embedding <=> %s::vector < 0.6
+        AND (%s::text[] IS NULL OR rc.review_id != ALL(%s::text[]))
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
+    exclude_arr = list(exclude_review_ids) if exclude_review_ids else None
+    cur.execute(query, (embedding_str, embedding_str, exclude_arr, exclude_arr, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
@@ -1006,8 +1008,16 @@ def run_rag(user_query):
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-    docs, embedding_input_tokens = similarity_search(user_query, k=8)
+    docs, embedding_input_tokens = similarity_search(
+        user_query, k=8, exclude_review_ids=st.session_state.seen_review_ids
+    )
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
+
+    # Track returned review_ids so they aren't repeated in future turns
+    for d in docs:
+        rid = d.get("review_id")
+        if rid:
+            st.session_state.seen_review_ids.add(rid)
 
     docs_for_llm = docs
     docs_for_map = enrich_with_location(docs)
@@ -1721,6 +1731,7 @@ st.set_page_config(
 _defaults = {
     "conversation_memory": [],
     "recommended_restaurants": set(),
+    "seen_review_ids": set(),
     "last_user_query": None,
     "last_docs_for_llm": None,
     "last_parsed_recommendations": None,
@@ -1753,6 +1764,7 @@ st.markdown('<div class="clear-fixed-btn">', unsafe_allow_html=True)
 if st.button("Clear conversation", key="clear_history"):
     st.session_state.conversation_memory = []
     st.session_state.recommended_restaurants = set()
+    st.session_state.seen_review_ids = set()
     st.session_state.judge_scores = None
     st.rerun()
 st.markdown("</div>", unsafe_allow_html=True)
