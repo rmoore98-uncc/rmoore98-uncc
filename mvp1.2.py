@@ -526,7 +526,7 @@ def update_judge_metrics(row_id, judge_results):
 # VECTOR SEARCH
 # -----------------------------
 @traceable(name="vector-search", run_type="retriever")
-def similarity_search(query_text, k=20):
+def similarity_search(query_text, k=20, exclude_review_ids=None):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
         input=query_text
@@ -539,6 +539,8 @@ def similarity_search(query_text, k=20):
 
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    exclude_review_ids = list(exclude_review_ids or [])
 
     query = """
         SELECT
@@ -553,17 +555,31 @@ def similarity_search(query_text, k=20):
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
             FROM review_photos rp
-            WHERE (rp.place_id = rc.place_id
-            and rp.review_id = rc.review_id)
+            WHERE rp.place_id = rc.place_id
+              AND rp.review_id = rc.review_id
             LIMIT 5
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-        AND rc.embedding <=> %s::vector < 0.6
+          AND rc.embedding <=> %s::vector < 0.6
+          AND (
+                %s::bigint[] = '{}'
+                OR rc.review_id <> ALL(%s::bigint[])
+          )
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
+    cur.execute(
+        query,
+        (
+            embedding_str,
+            embedding_str,
+            exclude_review_ids,
+            exclude_review_ids,
+            embedding_str,
+            k,
+        )
+    )
     rows = cur.fetchall()
 
     cur.close()
@@ -1034,7 +1050,20 @@ def run_rag(user_query):
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-    docs, embedding_input_tokens = similarity_search(user_query, k=8)
+
+    docs, embedding_input_tokens = similarity_search(
+    user_query,
+    k=8,
+    exclude_review_ids=st.session_state.seen_review_ids
+)
+   # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
+    if not docs and st.session_state.seen_review_ids:
+        docs, embedding_input_tokens = similarity_search(
+        user_query,
+        k=8,
+        exclude_review_ids=None
+    )
+        
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     docs_for_llm = docs
