@@ -44,6 +44,18 @@ def normalize_address_for_geocoding(address):
     ]
     for pattern in patterns:
         address = re.sub(pattern, "", address, flags=re.IGNORECASE)
+
+    # Expand common street/direction abbreviations for better geocoding
+    abbreviations = {
+        r'\bN\b': 'North', r'\bS\b': 'South', r'\bE\b': 'East', r'\bW\b': 'West',
+        r'\bNE\b': 'Northeast', r'\bNW\b': 'Northwest', r'\bSE\b': 'Southeast', r'\bSW\b': 'Southwest',
+        r'\bSt\b': 'Street', r'\bAve\b': 'Avenue', r'\bBlvd\b': 'Boulevard', r'\bDr\b': 'Drive',
+        r'\bLn\b': 'Lane', r'\bRd\b': 'Road', r'\bCt\b': 'Court', r'\bPl\b': 'Place',
+        r'\bPkwy\b': 'Parkway', r'\bHwy\b': 'Highway', r'\bCir\b': 'Circle', r'\bTrl\b': 'Trail',
+    }
+    for abbr, full in abbreviations.items():
+        address = re.sub(abbr, full, address, flags=re.IGNORECASE)
+
     return address.strip()
 
 def strip_suite(address):
