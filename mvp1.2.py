@@ -45,6 +45,9 @@ def normalize_address_for_geocoding(address):
     for pattern in patterns:
         address = re.sub(pattern, "", address, flags=re.IGNORECASE)
 
+    # Strip trailing country name — confuses Nominatim with abbreviated streets
+    address = re.sub(r',?\s*United States\s*$', '', address, flags=re.IGNORECASE)
+
     # Expand common street/direction abbreviations for better geocoding
     abbreviations = {
         r'\bN\b': 'North', r'\bS\b': 'South', r'\bE\b': 'East', r'\bW\b': 'West',
