@@ -943,7 +943,29 @@ def insert_evaluation_metric(metric_row):
         if conn:
             release_connection(conn)
 
+# -------------------------
+# Mark review IDs used in recommendations to avoid repetition in future responses
+# --------------------------    
+def mark_used_review_ids(parsed_recommendations, docs):
+    chosen_names = {
+        (rec.get("restaurant") or "").strip().lower()
+        for rec in parsed_recommendations
+        if isinstance(rec, dict) and rec.get("restaurant")
+    }
 
+    used_review_ids = set()
+
+    for row in docs:
+        place_name = (row.get("place_name") or "").strip().lower()
+        if not place_name:
+            continue
+
+        for chosen in chosen_names:
+            if chosen == place_name or chosen in place_name or place_name in chosen:
+                if row.get("review_id") is not None:
+                    used_review_ids.add(row["review_id"])
+
+    st.session_state.seen_review_ids.update(used_review_ids)
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
@@ -1105,6 +1127,7 @@ def run_rag(user_query):
         raw_output_for_db = parsed
 
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
+    mark_used_review_ids(parsed, docs)
 
     metric_row = {
         "user_query": user_query,
