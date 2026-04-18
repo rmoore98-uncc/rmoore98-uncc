@@ -1,7 +1,7 @@
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
-import psycopg2
+import psycopg2 
 import psycopg2.extras
 from psycopg2 import pool
 import os
@@ -12,6 +12,8 @@ import pandas as pd
 import re
 import pydeck as pdk
 import time
+from time import monotonic
+from collections import deque
 from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
 from langsmith.wrappers import wrap_openai
@@ -21,7 +23,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = wrap_openai(OpenAI(api_key=OPENAI_API_KEY))
+client = OpenAI(api_key=OPENAI_API_KEY)
 langsmith_client = LangSmithClient()
 
 # -----------------------------
@@ -60,6 +62,47 @@ def geocode_address(address):
         print("Geocoding error:", e)
     return None, None
 
+
+# -----------------------------
+# SESSION RATE LIMITING
+# -----------------------------
+RATE_LIMIT_MAX_REQUESTS = 5      # allow up to 5 requests
+RATE_LIMIT_WINDOW_SEC = 60       # per 60 seconds
+RATE_LIMIT_COOLDOWN_SEC = 8      # minimum gap between requests
+
+def init_rate_limit_state():
+    if "request_timestamps" not in st.session_state:
+        st.session_state.request_timestamps = deque()
+    if "last_request_time" not in st.session_state:
+        st.session_state.last_request_time = 0.0
+
+def check_rate_limit():
+    """
+    Returns (allowed: bool, message: str | None)
+    """
+    init_rate_limit_state()
+
+    now = monotonic()
+
+    # Short cooldown to prevent double submits / spam clicks
+    elapsed = now - st.session_state.last_request_time
+    if elapsed < RATE_LIMIT_COOLDOWN_SEC:
+        wait_for = int(RATE_LIMIT_COOLDOWN_SEC - elapsed) + 1
+        return False, f"Please wait about {wait_for} seconds before sending another request."
+
+    # Sliding window limit
+    timestamps = st.session_state.request_timestamps
+    while timestamps and (now - timestamps[0]) > RATE_LIMIT_WINDOW_SEC:
+        timestamps.popleft()
+
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        wait_for = int(RATE_LIMIT_WINDOW_SEC - (now - timestamps[0])) + 1
+        return False, f"Rate limit reached. Please wait about {wait_for} seconds and try again."
+
+    # Reserve the slot now
+    timestamps.append(now)
+    st.session_state.last_request_time = now
+    return True, None
 # -----------------------------
 # JSON Formatting Helpers
 import json
@@ -161,8 +204,69 @@ def parse_recommendations(answer):
     }], False
 
 # -----------------------------
+# MODERATION
+# -----------------------------
+def _to_plain_dict(obj):
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "__dict__"):
+        return vars(obj)
+    return {}
+
+
+def moderate_text(text):
+    """Moderate user input or model output."""
+    try:
+        response = client.moderations.create(
+            model="omni-moderation-latest",
+            input=text
+        )
+
+        result = response.results[0]
+        return {
+            "flagged": bool(getattr(result, "flagged", False)),
+            "categories": _to_plain_dict(getattr(result, "categories", {})),
+            "category_scores": _to_plain_dict(getattr(result, "category_scores", {})),
+        }
+    except Exception as e:
+        print("Moderation error:", e)
+        return {
+            "flagged": False,
+            "categories": {},
+            "category_scores": {},
+            "error": str(e),
+        }
+
+
+def build_moderation_block_message(moderation_result, stage="input"):
+    categories = moderation_result.get("categories", {}) or {}
+    blocked_categories = [k for k, v in categories.items() if v]
+    category_text = ", ".join(blocked_categories) if blocked_categories else "policy-sensitive content"
+
+    if stage == "input":
+        description = (
+            f"I can’t process that request because it was flagged by moderation "
+            f"({category_text}). Please rephrase and try again."
+        )
+    else:
+        description = "I couldn’t return a safe response for that request. Please try rephrasing."
+
+    return [{
+        "restaurant": "",
+        "dish": "",
+        "description": description,
+        "review_excerpt": "",
+        "why_this_was_selected": "",
+        "photos": []
+    }]
+
+
+# -----------------------------
 # LLM as a Judge
-@traceable(name="llm-judge", run_type="llm")
 def evaluate_with_llm_judge(user_query, docs_for_llm, parsed_recommendations):
     """
     Uses a second LLM call to score the quality of the generated recommendations.
@@ -273,8 +377,7 @@ if "last_metric_row_id" not in st.session_state:
     st.session_state.last_metric_row_id = None
 
 # -----------------------------
-# DB CONNECTION POOL
-# Shared pool prevents SSL drops and connection exhaustion under concurrent load.
+# DB CONNECTION
 # -----------------------------
 connection_pool = pool.ThreadedConnectionPool(
     minconn=2,
@@ -356,7 +459,7 @@ def insert_evaluation_metric(metric_row):
         if cur:
             cur.close()
         if conn:
-            release_connection(conn)
+            conn.close()
 
 
 def update_judge_metrics(row_id, judge_results):
@@ -396,12 +499,11 @@ def update_judge_metrics(row_id, judge_results):
         if cur:
             cur.close()
         if conn:
-            release_connection(conn)
+            conn.close()
 
 # -----------------------------
 # VECTOR SEARCH
 # -----------------------------
-@traceable(name="vector-search", run_type="retriever")
 def similarity_search(query_text, k=20):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
@@ -429,7 +531,8 @@ def similarity_search(query_text, k=20):
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
             FROM review_photos rp
-            WHERE rp.place_id = rc.place_id
+            WHERE (rp.place_id = rc.place_id
+            and rp.review_id = rc.review_id)
             LIMIT 5
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
@@ -442,7 +545,7 @@ def similarity_search(query_text, k=20):
     rows = cur.fetchall()
 
     cur.close()
-    release_connection(conn)
+    conn.close()
 
     return rows, embedding_input_tokens
 # ------------------------------
@@ -462,7 +565,7 @@ def enrich_with_location(rows):
 
     if place_ids:
         cur.execute("""
-            SELECT place_id, address, latitude, longitude
+            SELECT place_id, address
             FROM place_table
             WHERE place_id = ANY(%s)
         """, (place_ids,))
@@ -611,10 +714,10 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
-@traceable(name="food-recommendation-pipeline", run_type="chain")
 def run_rag(user_query):
     """
     Main RAG function:
+    - Moderates user input before retrieval/generation
     - Performs similarity search
     - Returns recommendations or fallback if no relevant reviews
     - Inserts base evaluation metrics immediately
@@ -623,10 +726,48 @@ def run_rag(user_query):
     """
     total_start = time.time()
 
+    input_moderation = moderate_text(user_query)
+    if input_moderation.get("flagged"):
+        blocked = build_moderation_block_message(input_moderation, stage="input")
+
+        metric_row = {
+            "user_query": user_query,
+            "retrieved_doc_count": 0,
+            "avg_distance": None,
+            "retrieval_time_ms": 0,
+            "generation_time_ms": 0,
+            "embedding_input_tokens": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "llm_total_tokens": 0,
+            "json_valid": True,
+            "fallback_used": True,
+            "raw_output": json.dumps({
+                "type": "moderation_block",
+                "stage": "input",
+                "moderation": input_moderation,
+                "response": blocked
+            }, default=str)
+        }
+
+        metric_row_id = insert_evaluation_metric(metric_row)
+
+        st.session_state.last_user_query = user_query
+        st.session_state.last_docs_for_llm = []
+        st.session_state.last_parsed_recommendations = blocked
+        st.session_state.last_metric_row_id = metric_row_id
+
+        st.session_state.conversation_memory.append({
+            "user": user_query,
+            "assistant": blocked
+        })
+
+        return blocked
+
+
     run_tree = get_current_run_tree()
     if run_tree:
         st.session_state.last_langsmith_run_id = str(run_tree.id)
-
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
@@ -662,7 +803,7 @@ def run_rag(user_query):
             "llm_total_tokens": llm_total_tokens,
             "json_valid": True,
             "fallback_used": True,
-            "raw_output": json.dumps(fallback)
+            "raw_output": json.dumps(fallback, default=str)
         }
 
         metric_row_id = insert_evaluation_metric(metric_row)
@@ -733,7 +874,21 @@ Review excerpts:
 
     answer = response.choices[0].message.content or ""
 
-    parsed, json_valid = parse_recommendations(answer)
+    output_moderation = moderate_text(answer)
+    if output_moderation.get("flagged"):
+        parsed = build_moderation_block_message(output_moderation, stage="output")
+        json_valid = True
+        raw_output_for_db = {
+            "type": "moderation_block",
+            "stage": "output",
+            "moderation": output_moderation,
+            "raw_model_output": answer,
+            "response": parsed
+        }
+    else:
+        parsed, json_valid = parse_recommendations(answer)
+        raw_output_for_db = parsed
+
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
 
     metric_row = {
@@ -748,7 +903,7 @@ Review excerpts:
         "llm_total_tokens": llm_total_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
-        "raw_output": json.dumps(parsed)
+        "raw_output": json.dumps(raw_output_for_db, default=str)
     }
 
     metric_row_id = insert_evaluation_metric(metric_row)
@@ -1362,9 +1517,16 @@ if st.button("Clear conversation", key="clear_history"):
 st.markdown("</div>", unsafe_allow_html=True)
 
 user_query = st.chat_input("What kind of food or drink are you looking for?")
+recs = None
+
 if user_query:
-    with st.spinner("Analysing reviews..."):
-        recs = run_rag(user_query)
+    allowed, rate_limit_message = check_rate_limit()
+
+    if not allowed:
+        st.warning(rate_limit_message)
+    else:
+        with st.spinner("Analysing reviews..."):
+            recs = run_rag(user_query)
 
 tab1, tab2, tab3 = st.tabs(["Discover", "Want to Try", "Already Tried"])
 
@@ -1455,7 +1617,6 @@ with tab1:
             """,
             unsafe_allow_html=True,
         )
-
     history = st.session_state.conversation_memory[:-1] if user_query else st.session_state.conversation_memory
     for msg in history:
         with st.chat_message("user"):
