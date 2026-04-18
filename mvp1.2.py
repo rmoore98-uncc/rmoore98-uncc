@@ -1067,6 +1067,28 @@ def inject_css():
             height: 100px;
             background: linear-gradient(135deg, #3a2e26 0%, #2d2420 100%);
         }
+        .photo-gallery {
+            display: flex;
+            overflow-x: auto;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            scrollbar-width: thin;
+            scrollbar-color: var(--ghost-border) transparent;
+        }
+        .photo-gallery::-webkit-scrollbar {
+            height: 6px;
+        }
+        .photo-gallery::-webkit-scrollbar-thumb {
+            background: var(--ghost-border);
+            border-radius: 3px;
+        }
+        .photo-gallery img {
+            height: 160px;
+            min-width: 200px;
+            object-fit: cover;
+            border-radius: 0.75rem;
+            flex-shrink: 0;
+        }
 
         /* ── Blockquote excerpt ── */
         .blockquote-excerpt {
@@ -1315,12 +1337,16 @@ def _rec_card_html(rec: dict) -> str:
     address     = rec.get("address") or "Address not available"
     photos      = rec.get("photos") or []
 
-    first_photo = photos[0] if photos else ""
-    img_html = (
-        f'<img class="bleed-img" src="{first_photo}" alt="{restaurant}" />'
-        if first_photo else
-        '<div class="bleed-img-placeholder"></div>'
-    )
+    if len(photos) > 1:
+        gallery_imgs = ''.join(
+            f'<img src="{url}" alt="{restaurant}" />'
+            for url in photos
+        )
+        img_html = f'<div class="photo-gallery">{gallery_imgs}</div>'
+    elif photos:
+        img_html = f'<img class="bleed-img" src="{photos[0]}" alt="{restaurant}" />'
+    else:
+        img_html = '<div class="bleed-img-placeholder"></div>'
 
     excerpt_html = f'<blockquote class="blockquote-excerpt">"{excerpt}"</blockquote>' if excerpt else ""
     why_html     = f'<p class="muted-text" style="margin-top:0.5rem">{why}</p>' if why else ""
