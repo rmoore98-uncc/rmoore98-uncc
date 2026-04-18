@@ -607,6 +607,18 @@ def enrich_with_location(rows):
         new_row["latitude"] = data.get("latitude")
         new_row["longitude"] = data.get("longitude")
 
+        # Fallback: geocode if DB has no coordinates but has an address
+        if new_row["latitude"] is None or new_row["longitude"] is None:
+            address = new_row.get("address")
+            if address:
+                normalized = normalize_address_for_geocoding(address)
+                lat, lon = geocode_address(normalized)
+                if lat is None or lon is None:
+                    fallback_addr = strip_suite(normalized)
+                    lat, lon = geocode_address(fallback_addr)
+                new_row["latitude"] = lat
+                new_row["longitude"] = lon
+
         enriched.append(new_row)
 
     return enriched
