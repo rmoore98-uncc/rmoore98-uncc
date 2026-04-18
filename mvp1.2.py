@@ -429,36 +429,38 @@ def insert_evaluation_metric(metric_row):
         cur = conn.cursor()
 
         query = """
-            INSERT INTO evaluation_metrics (
-                user_query,
-                retrieved_doc_count,
-                avg_distance,
-                retrieval_time_ms,
-                generation_time_ms,
-                embedding_input_tokens,
-                llm_input_tokens,
-                llm_output_tokens,
-                llm_total_tokens,
-                json_valid,
-                fallback_used,
-                raw_output
-            )
-            VALUES (
-                %(user_query)s,
-                %(retrieved_doc_count)s,
-                %(avg_distance)s,
-                %(retrieval_time_ms)s,
-                %(generation_time_ms)s,
-                %(embedding_input_tokens)s,
-                %(llm_input_tokens)s,
-                %(llm_output_tokens)s,
-                %(llm_total_tokens)s,
-                %(json_valid)s,
-                %(fallback_used)s,
-                %(raw_output)s::jsonb
-            )
-            RETURNING id
-        """
+    INSERT INTO evaluation_metrics (
+        user_query,
+        retrieved_doc_count,
+        avg_distance,
+        retrieval_time_ms,
+        generation_time_ms,
+        embedding_input_tokens,
+        llm_input_tokens,
+        llm_output_tokens,
+        llm_total_tokens,
+        cached_input_tokens,
+        json_valid,
+        fallback_used,
+        raw_output
+    )
+    VALUES (
+        %(user_query)s,
+        %(retrieved_doc_count)s,
+        %(avg_distance)s,
+        %(retrieval_time_ms)s,
+        %(generation_time_ms)s,
+        %(embedding_input_tokens)s,
+        %(llm_input_tokens)s,
+        %(llm_output_tokens)s,
+        %(llm_total_tokens)s,
+        %(cached_input_tokens)s,
+        %(json_valid)s,
+        %(fallback_used)s,
+        %(raw_output)s::jsonb
+    )
+    RETURNING id
+"""
 
         cur.execute(query, metric_row)
         inserted_id = cur.fetchone()[0]
@@ -814,24 +816,25 @@ def run_rag(user_query):
         blocked = build_moderation_block_message(input_moderation, stage="input")
 
         metric_row = {
-            "user_query": user_query,
-            "retrieved_doc_count": 0,
-            "avg_distance": None,
-            "retrieval_time_ms": 0,
-            "generation_time_ms": 0,
-            "embedding_input_tokens": 0,
-            "llm_input_tokens": 0,
-            "llm_output_tokens": 0,
-            "llm_total_tokens": 0,
-            "json_valid": True,
-            "fallback_used": True,
-            "raw_output": json.dumps({
-                "type": "moderation_block",
-                "stage": "input",
-                "moderation": input_moderation,
-                "response": blocked
-            }, default=str)
-        }
+    "user_query": user_query,
+    "retrieved_doc_count": 0,
+    "avg_distance": None,
+    "retrieval_time_ms": 0,
+    "generation_time_ms": 0,
+    "embedding_input_tokens": 0,
+    "llm_input_tokens": 0,
+    "llm_output_tokens": 0,
+    "llm_total_tokens": 0,
+    "cached_input_tokens": 0,
+    "json_valid": True,
+    "fallback_used": True,
+    "raw_output": json.dumps({
+        "type": "moderation_block",
+        "stage": "input",
+        "moderation": input_moderation,
+        "response": blocked
+    }, default=str)
+}
 
         metric_row_id = insert_evaluation_metric(metric_row)
 
@@ -868,6 +871,7 @@ def run_rag(user_query):
     llm_input_tokens = 0
     llm_output_tokens = 0
     llm_total_tokens = 0
+    cached_input_tokens = 0
 
     if not docs:
         fallback = [{
@@ -884,6 +888,7 @@ def run_rag(user_query):
             "llm_input_tokens": llm_input_tokens,
             "llm_output_tokens": llm_output_tokens,
             "llm_total_tokens": llm_total_tokens,
+            "cached_input_tokens": cached_input_tokens,
             "json_valid": True,
             "fallback_used": True,
             "raw_output": json.dumps(fallback, default=str)
@@ -923,6 +928,13 @@ def run_rag(user_query):
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
+    prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
+    if prompt_tokens_details:
+        cached_input_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
+    else:
+        cached_input_tokens = 0
+
+   
 
     cached_input_tokens = 0
     prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
@@ -960,6 +972,7 @@ def run_rag(user_query):
         "llm_input_tokens": llm_input_tokens,
         "llm_output_tokens": llm_output_tokens,
         "llm_total_tokens": llm_total_tokens,
+        "cached_input_tokens": cached_input_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
         "raw_output": json.dumps(raw_output_for_db, default=str)
