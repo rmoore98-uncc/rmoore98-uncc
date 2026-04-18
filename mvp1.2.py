@@ -746,14 +746,24 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # Stable prompt for OpenAI Prompt Caching
 # -----------------------------
 STATIC_SYSTEM_PROMPT = """
-You are a professional food critic.
+You are a professional food critic helping users choose restaurants based only on retrieved review evidence.
 
-Generate up to THREE restaurant recommendations based on the review excerpts provided.
+Your job is to generate restaurant recommendations grounded in the provided review excerpts.
 
-Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
-If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
+Follow these rules exactly:
 
-Return ONLY valid JSON using this structure:
+1. Recommend up to THREE restaurants.
+2. Recommend exactly 3 only if 3 distinct clearly relevant restaurants are supported by the provided review excerpts.
+3. If fewer than 3 distinct relevant restaurants are supported, return fewer than 3.
+4. If no relevant restaurants are supported, return a single object with an empty restaurant name and a short explanation in the description field.
+5. Use only information contained in the provided review excerpts.
+6. Do not invent dishes, descriptions, quotes, or restaurant attributes.
+7. review_excerpt must be verbatim or lightly trimmed from the provided review text.
+8. why_this_was_selected must briefly explain why the restaurant matches the user's request.
+9. Prefer recommendations that are directly relevant to the user's requested cuisine, style, or dining experience.
+10. If the user asks for alternatives, avoid repeating restaurants already mentioned in prior conversation when other relevant supported options are available.
+
+Return ONLY valid JSON using this exact structure:
 
 [
   {
@@ -766,34 +776,173 @@ Return ONLY valid JSON using this structure:
   }
 ]
 
-**Important:**
-- Only recommend restaurants if the reviews are clearly relevant to the user query.
-- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
-- Use only information from the review excerpts provided. Do NOT make up any details.
-- Provide your justification for selecting the review_excerpt.
+Additional rules:
+- No markdown
+- No code fences
+- No prose before or after the JSON
+- No trailing commas
+- Output must be a JSON array
 """
+
+
+def build_memory_context(max_turns=2):
+    """
+    Keep memory short and lightweight so more of the prompt prefix stays stable.
+    Do NOT include full assistant JSON blobs.
+    """
+    memory = st.session_state.conversation_memory[-max_turns:]
+
+    if not memory:
+        return "No previous conversation."
+
+    lines = []
+
+    for turn in memory:
+        user_text = (turn.get("user") or "").strip()
+
+        assistant_items = turn.get("assistant") or []
+        restaurant_names = []
+
+        if isinstance(assistant_items, list):
+            for item in assistant_items:
+                if isinstance(item, dict):
+                    name = (item.get("restaurant") or "").strip()
+                    if name:
+                        restaurant_names.append(name)
+
+        if restaurant_names:
+            assistant_summary = "Previously recommended: " + ", ".join(restaurant_names[:5])
+        else:
+            assistant_summary = "Previously provided recommendations."
+
+        if user_text:
+            lines.append(f"User: {user_text}")
+        lines.append(f"Assistant: {assistant_summary}")
+
+    return "\n".join(lines)
+
+
+def build_review_context(docs):
+    """
+    Build review context in a stable order to improve prompt prefix consistency.
+    """
+    context = ""
+
+    sorted_docs = sorted(
+        docs,
+        key=lambda d: (
+            d.get("place_name", ""),
+            round(d.get("distance", 999), 4),
+            d.get("review_id", 0)
+        )
+    )
+
+    for d in sorted_docs:
+        photos = d.get("photos") or []
+        photo_links = []
+
+        if isinstance(photos, list):
+            for photo_item in photos:
+                if isinstance(photo_item, dict):
+                    link = photo_item.get("photo_link")
+                    if link:
+                        photo_links.append(link)
+
+        photos_text = ", ".join(photo_links) if photo_links else "No photos"
+
+        context += f"""
+Restaurant: {d.get('place_name', '')}
+Review: {d.get('chunk_text', '')}
+Similarity Score: {round(d.get('distance', 0), 4) if d.get('distance') is not None else 'N/A'}
+Photo Links: {photos_text}
+"""
+
+    return context
 
 
 def build_generation_messages(user_query, memory_context, review_context):
     """
-    Keep the system prompt stable so OpenAI prompt caching can reuse the
-    shared prefix across requests.
+    Keep the system prompt stable.
+    Put short memory before the larger changing review context.
     """
-    dynamic_context = f"""
-Previous conversation:
+    dynamic_context = f"""Previous conversation:
 {memory_context}
-
-Review excerpts:
-{review_context}
 
 User request:
 {user_query}
+
+Review excerpts:
+{review_context}
 """
 
     return [
         {"role": "system", "content": STATIC_SYSTEM_PROMPT},
         {"role": "user", "content": dynamic_context},
     ]
+
+
+# -----------------------------
+# EVALUATION METRICS LOGGING
+# -----------------------------
+def insert_evaluation_metric(metric_row):
+    conn = None
+    cur = None
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        query = """
+            INSERT INTO evaluation_metrics (
+                user_query,
+                retrieved_doc_count,
+                avg_distance,
+                retrieval_time_ms,
+                generation_time_ms,
+                embedding_input_tokens,
+                llm_input_tokens,
+                llm_output_tokens,
+                llm_total_tokens,
+                cached_input_tokens,
+                json_valid,
+                fallback_used,
+                raw_output
+            )
+            VALUES (
+                %(user_query)s,
+                %(retrieved_doc_count)s,
+                %(avg_distance)s,
+                %(retrieval_time_ms)s,
+                %(generation_time_ms)s,
+                %(embedding_input_tokens)s,
+                %(llm_input_tokens)s,
+                %(llm_output_tokens)s,
+                %(llm_total_tokens)s,
+                %(cached_input_tokens)s,
+                %(json_valid)s,
+                %(fallback_used)s,
+                %(raw_output)s::jsonb
+            )
+            RETURNING id
+        """
+
+        cur.execute(query, metric_row)
+        inserted_id = cur.fetchone()[0]
+        conn.commit()
+        return inserted_id
+
+    except Exception as e:
+        print("Error inserting evaluation metric:", e)
+        if conn:
+            conn.rollback()
+        return None
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
+
 
 # -----------------------------
 # MAIN RAG FUNCTION
@@ -816,25 +965,25 @@ def run_rag(user_query):
         blocked = build_moderation_block_message(input_moderation, stage="input")
 
         metric_row = {
-    "user_query": user_query,
-    "retrieved_doc_count": 0,
-    "avg_distance": None,
-    "retrieval_time_ms": 0,
-    "generation_time_ms": 0,
-    "embedding_input_tokens": 0,
-    "llm_input_tokens": 0,
-    "llm_output_tokens": 0,
-    "llm_total_tokens": 0,
-    "cached_input_tokens": 0,
-    "json_valid": True,
-    "fallback_used": True,
-    "raw_output": json.dumps({
-        "type": "moderation_block",
-        "stage": "input",
-        "moderation": input_moderation,
-        "response": blocked
-    }, default=str)
-}
+            "user_query": user_query,
+            "retrieved_doc_count": 0,
+            "avg_distance": None,
+            "retrieval_time_ms": 0,
+            "generation_time_ms": 0,
+            "embedding_input_tokens": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "llm_total_tokens": 0,
+            "cached_input_tokens": 0,
+            "json_valid": True,
+            "fallback_used": True,
+            "raw_output": json.dumps({
+                "type": "moderation_block",
+                "stage": "input",
+                "moderation": input_moderation,
+                "response": blocked
+            }, default=str)
+        }
 
         metric_row_id = insert_evaluation_metric(metric_row)
 
@@ -850,10 +999,10 @@ def run_rag(user_query):
 
         return blocked
 
-
     run_tree = get_current_run_tree()
     if run_tree:
         st.session_state.last_langsmith_run_id = str(run_tree.id)
+
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
@@ -920,7 +1069,8 @@ def run_rag(user_query):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
-        temperature=0.3
+        temperature=0.3,
+        prompt_cache_key="foodfinder_recommendation_v1"
     )
     generation_time_ms = int((time.time() - generation_start) * 1000)
 
@@ -928,18 +1078,12 @@ def run_rag(user_query):
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
+
     prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
     if prompt_tokens_details:
         cached_input_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
     else:
         cached_input_tokens = 0
-
-   
-
-    cached_input_tokens = 0
-    prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
-    if prompt_tokens_details:
-        cached_input_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
 
     print(f"Prompt cached tokens: {cached_input_tokens}")
 
@@ -991,7 +1135,6 @@ def run_rag(user_query):
     })
 
     return parsed
-
 # ─────────────────────────────────────────────
 # MAP RENDERER
 # ─────────────────────────────────────────────
