@@ -602,9 +602,9 @@ def enrich_with_location(rows):
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
-def build_memory_context():
+def build_memory_context(max_turns=3):
 
-    memory = st.session_state.conversation_memory
+    memory = st.session_state.conversation_memory[-max_turns:]
 
     if not memory:
         return "No previous conversation."
@@ -712,6 +712,59 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 
     return enriched_recs
 
+
+# -----------------------------
+# Stable prompt for OpenAI Prompt Caching
+# -----------------------------
+STATIC_SYSTEM_PROMPT = """
+You are a professional food critic.
+
+Generate up to THREE restaurant recommendations based on the review excerpts provided.
+
+Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
+If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
+
+Return ONLY valid JSON using this structure:
+
+[
+  {
+    "restaurant": "restaurant name",
+    "dish": "specific dish mentioned in reviews",
+    "description": "short recommendation",
+    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
+    "why_this_was_selected": "brief explanation tying the user query to the review",
+    "photos": ["photo_url1", "photo_url2"]
+  }
+]
+
+**Important:**
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
+- Use only information from the review excerpts provided. Do NOT make up any details.
+- Provide your justification for selecting the review_excerpt.
+"""
+
+
+def build_generation_messages(user_query, memory_context, review_context):
+    """
+    Keep the system prompt stable so OpenAI prompt caching can reuse the
+    shared prefix across requests.
+    """
+    dynamic_context = f"""
+Previous conversation:
+{memory_context}
+
+Review excerpts:
+{review_context}
+
+User request:
+{user_query}
+"""
+
+    return [
+        {"role": "system", "content": STATIC_SYSTEM_PROMPT},
+        {"role": "user", "content": dynamic_context},
+    ]
 
 # -----------------------------
 # MAIN RAG FUNCTION
@@ -825,47 +878,16 @@ def run_rag(user_query):
 
     review_context = build_review_context(docs_for_llm)
 
-    system_prompt = f"""
-You are a professional food critic.
-
-Generate up to THREE restaurant recommendations based on the review excerpts provided.
-
-Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
-If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
-
-Return ONLY valid JSON using this structure:
-
-[
-  {{
-    "restaurant": "restaurant name",
-    "dish": "specific dish mentioned in reviews",
-    "description": "short recommendation",
-    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
-    "why_this_was_selected": "brief explanation tying the user query to the review",
-    "photos": ["photo_url1", "photo_url2"]
-  }}
-]
-
-Previous conversation:
-{memory_context}
-
-Review excerpts:
-{review_context}
-
-**Important:**  
-- Only recommend restaurants if the reviews are clearly relevant to the user query.
-- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
-- Use only information from the review excerpts provided. Do NOT make up any details.
-- Provide your justification for selecting the review_excerpt.
-"""
+    messages = build_generation_messages(
+        user_query=user_query,
+        memory_context=memory_context,
+        review_context=review_context
+    )
 
     generation_start = time.time()
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query},
-        ],
+        messages=messages,
         temperature=0.3
     )
     generation_time_ms = int((time.time() - generation_start) * 1000)
@@ -874,6 +896,13 @@ Review excerpts:
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
+
+    cached_input_tokens = 0
+    prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
+    if prompt_tokens_details:
+        cached_input_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
+
+    print(f"Prompt cached tokens: {cached_input_tokens}")
 
     answer = response.choices[0].message.content or ""
 
