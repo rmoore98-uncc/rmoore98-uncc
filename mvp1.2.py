@@ -23,7 +23,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = wrap_openai(api_key=OPENAI_API_KEY)
 langsmith_client = LangSmithClient()
 
 # -----------------------------
@@ -267,6 +267,7 @@ def build_moderation_block_message(moderation_result, stage="input"):
 
 # -----------------------------
 # LLM as a Judge
+@traceable(name="llm-judge", run_type="llm")
 def evaluate_with_llm_judge(user_query, docs_for_llm, parsed_recommendations):
     """
     Uses a second LLM call to score the quality of the generated recommendations.
@@ -459,7 +460,7 @@ def insert_evaluation_metric(metric_row):
         if cur:
             cur.close()
         if conn:
-            conn.close()
+            release_connection(conn)
 
 
 def update_judge_metrics(row_id, judge_results):
@@ -499,11 +500,12 @@ def update_judge_metrics(row_id, judge_results):
         if cur:
             cur.close()
         if conn:
-            conn.close()
+            release_connection(conn)
 
 # -----------------------------
 # VECTOR SEARCH
 # -----------------------------
+@traceable(name="vector-search", run_type="retriever")
 def similarity_search(query_text, k=20):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
@@ -545,7 +547,7 @@ def similarity_search(query_text, k=20):
     rows = cur.fetchall()
 
     cur.close()
-    conn.close()
+    release_connection(conn)
 
     return rows, embedding_input_tokens
 # ------------------------------
@@ -565,7 +567,7 @@ def enrich_with_location(rows):
 
     if place_ids:
         cur.execute("""
-            SELECT place_id, address
+            SELECT place_id, address, latitude, longitude
             FROM place_table
             WHERE place_id = ANY(%s)
         """, (place_ids,))
@@ -714,6 +716,7 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
+@traceable(name="food-recommendation-pipeline", run_type="chain")
 def run_rag(user_query):
     """
     Main RAG function:
