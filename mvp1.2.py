@@ -392,6 +392,9 @@ if "last_parsed_recommendations" not in st.session_state:
 if "last_metric_row_id" not in st.session_state:
     st.session_state.last_metric_row_id = None
 
+if "seen_review_ids" not in st.session_state:
+    st.session_state.seen_review_ids = set()
+
 # -----------------------------
 # DB CONNECTION
 # -----------------------------
@@ -947,6 +950,9 @@ def insert_evaluation_metric(metric_row):
 # Mark review IDs used in recommendations to avoid repetition in future responses
 # --------------------------    
 def mark_used_review_ids(parsed_recommendations, docs):
+    if "seen_review_ids" not in st.session_state:
+        st.session_state.seen_review_ids = set()
+
     chosen_names = {
         (rec.get("restaurant") or "").strip().lower()
         for rec in parsed_recommendations
@@ -1753,6 +1759,7 @@ _defaults = {
     "already_tried": [],
     "review_open": {},
     "judge_scores": None,
+    "seen_review_ids": set(),
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -1777,6 +1784,7 @@ if st.button("Clear conversation", key="clear_history"):
     st.session_state.conversation_memory = []
     st.session_state.recommended_restaurants = set()
     st.session_state.judge_scores = None
+    st.session_state.seen_review_ids = set()
     st.rerun()
 st.markdown("</div>", unsafe_allow_html=True)
 
