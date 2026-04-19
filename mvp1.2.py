@@ -1086,6 +1086,7 @@ def run_rag(user_query):
     exclude_review_ids=st.session_state.seen_review_ids
 )
    # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
+    all_docs_for_query = []
     if not docs and st.session_state.seen_review_ids:
         docs, embedding_input_tokens = similarity_search(
         user_query,
@@ -1109,8 +1110,23 @@ def run_rag(user_query):
     cached_input_tokens = 0
 
     if not docs:
-        fallback = [{
-            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
+        if all_docs_for_query:
+            fallback = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
+        else:
+            fallback = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "There are no relevant reviews based on your input. Try rephrasing your question or asking about something else.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
         }]
 
         metric_row = {
@@ -1628,7 +1644,7 @@ def _star_display(rating: int) -> str:
 
 
 def _rec_card_html(rec: dict) -> str:
-    restaurant = rec.get("restaurant") or "Unknown Restaurant"
+    restaurant = rec.get("restaurant") or ""
     dish        = rec.get("dish", "")
     description = rec.get("description", "")
     excerpt     = rec.get("review_excerpt", "")
