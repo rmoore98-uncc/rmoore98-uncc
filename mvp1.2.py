@@ -17,14 +17,49 @@ from collections import deque
 from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
 from langsmith.wrappers import wrap_openai
+from gotrue import SyncGoTrueClient
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_PASSWORD = os.getenv("PASSWORD")
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+auth_client = SyncGoTrueClient(
+    url=f"{DATABASE_URL}/auth/v1",
+    headers={
+        "apikey": SUPABASE_ANON_KEY
+    }
+)
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 langsmith_client = LangSmithClient()
+
+# -----------------------------
+# Signup Function
+# -----------------------------
+def sign_up_user(email, password):
+    try:
+        response = auth_client.sign_up(
+            email=email,
+            password=password
+        )
+
+        if hasattr(response, "user") and response.user:
+            st.success(
+                "Account created successfully. "
+                "Check your email if confirmation is required."
+            )
+            return response
+
+        st.error("Signup did not return a user.")
+        return None
+
+    except Exception as e:
+        st.error(f"Signup failed: {str(e)}")
+        return None
 
 # -----------------------------
 # GEOCODING (Address → Lat/Lon)
@@ -219,7 +254,7 @@ def parse_recommendations(answer):
     }], False
 
 # -----------------------------
-# MODERATION
+# CONTENT MODERATION
 # -----------------------------
 def _to_plain_dict(obj):
     if obj is None:
@@ -394,6 +429,15 @@ if "last_metric_row_id" not in st.session_state:
 
 if "seen_review_ids" not in st.session_state:
     st.session_state.seen_review_ids = set()
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+if "auth_access_token" not in st.session_state:
+    st.session_state.auth_access_token = None
+
+if "auth_email" not in st.session_state:
+    st.session_state.auth_email = None
 
 # -----------------------------
 # DB CONNECTION
