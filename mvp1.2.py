@@ -30,7 +30,7 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 st.write("DATABASE_URL loaded:", repr(DATABASE_URL))
 st.write("SUPABASE_ANON_KEY loaded:", bool(SUPABASE_ANON_KEY))
 
-st.write("URL:", repr(os.getenv("SUPABASE_URL")))
+st.write("URL:", repr(os.getenv("DATABASE_URL")))
 st.write("KEY:", repr(os.getenv("SUPABASE_ANON_KEY"))[:40])
 
 if not DATABASE_URL:
