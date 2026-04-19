@@ -126,7 +126,7 @@ def load_user_saved_lists(foodfinder_user_id):
             FROM user_restaurant_lists
             WHERE foodfinder_user_id = %s
             ORDER BY created_at DESC
-        """, (user_id,)) 
+        """, (foodfinder_user_id,)) 
 
         rows = cur.fetchall()
 
