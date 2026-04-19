@@ -650,7 +650,7 @@ def enrich_with_location(rows):
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
-def build_memory_context(max_turns=10):
+def build_memory_context(max_turns=3):
 
     memory = st.session_state.conversation_memory[-max_turns:]
 
@@ -1085,10 +1085,10 @@ def run_rag(user_query):
     k=8,
     exclude_review_ids=st.session_state.seen_review_ids
 )
-   # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
+
     all_docs_for_query = []
     if not docs and st.session_state.seen_review_ids:
-        docs, embedding_input_tokens = similarity_search(
+        all_docs_for_query, _ = similarity_search(
         user_query,
         k=8,
         exclude_review_ids=None
