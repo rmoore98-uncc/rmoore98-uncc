@@ -30,6 +30,9 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 st.write("DATABASE_URL loaded:", repr(DATABASE_URL))
 st.write("SUPABASE_ANON_KEY loaded:", bool(SUPABASE_ANON_KEY))
 
+st.write("URL:", repr(os.getenv("SUPABASE_URL")))
+st.write("KEY:", repr(os.getenv("SUPABASE_ANON_KEY"))[:40])
+
 if not DATABASE_URL:
     st.error("DATABASE_URL is missing.")
     st.stop()
@@ -37,6 +40,8 @@ if not DATABASE_URL:
 if not SUPABASE_ANON_KEY:
     st.error("SUPABASE_ANON_KEY is missing.")
     st.stop()
+
+
 
 auth_client = SyncGoTrueClient(
     url=f"{DATABASE_URL}/auth/v1",
