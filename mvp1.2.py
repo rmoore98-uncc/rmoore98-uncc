@@ -650,7 +650,7 @@ def enrich_with_location(rows):
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
-def build_memory_context(max_turns=3):
+def build_memory_context(max_turns=10):
 
     memory = st.session_state.conversation_memory[-max_turns:]
 
@@ -833,7 +833,7 @@ Additional rules:
 """
 
 
-def build_memory_context(max_turns=2):
+def build_memory_context(max_turns=3):
     """
     Keep memory short and lightweight so more of the prompt prefix stays stable.
     Do NOT include full assistant JSON blobs.
@@ -1227,7 +1227,7 @@ def run_rag(user_query):
         parsed = [{
             "restaurant": "",
             "dish": "",
-            "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+            "description": "You have already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
             "review_excerpt": "",
             "why_this_was_selected": "",
             "photos": []
