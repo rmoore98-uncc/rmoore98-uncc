@@ -1207,11 +1207,11 @@ def run_rag(user_query):
         raw_output_for_db = parsed
 
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-    mark_used_review_ids(parsed, docs)
-    
-    # ---- accounts for scenarios where rows are returned, but not useable
+
+    all_docs_without_exclusion = []
+
     has_real_restaurants = any(
-    (rec.get("restaurant") or "").strip()
+        (rec.get("restaurant") or "").strip()
     for rec in parsed
     if isinstance(rec, dict)
 )
@@ -1227,11 +1227,14 @@ def run_rag(user_query):
         parsed = [{
             "restaurant": "",
             "dish": "",
-            "description": "You have already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+            "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
             "review_excerpt": "",
             "why_this_was_selected": "",
             "photos": []
         }]
+
+
+    mark_used_review_ids(parsed, docs)
 
     metric_row = {
         "user_query": user_query,
