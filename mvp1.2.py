@@ -650,7 +650,7 @@ def enrich_with_location(rows):
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
-def build_memory_context(max_turns=10):
+def build_memory_context(max_turns=5):
 
     memory = st.session_state.conversation_memory[-max_turns:]
 
