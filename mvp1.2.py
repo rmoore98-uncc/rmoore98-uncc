@@ -993,7 +993,7 @@ def insert_evaluation_metric(metric_row):
 
 # -------------------------
 # Mark review IDs used in recommendations to avoid repetition in future responses
-# --------------------------
+# --------------------------    
 def mark_used_review_ids(parsed_recommendations, docs):
     if "seen_review_ids" not in st.session_state:
         st.session_state.seen_review_ids = set()
@@ -1011,18 +1011,26 @@ def mark_used_review_ids(parsed_recommendations, docs):
         if not place_name:
             continue
 
-        # safer exact match only
-        if place_name in chosen_names:
-            if row.get("review_id") is not None:
-                used_review_ids.add(row["review_id"])
+        for chosen in chosen_names:
+            if chosen == place_name or chosen in place_name or place_name in chosen:
+                if row.get("review_id") is not None:
+                    used_review_ids.add(row["review_id"])
 
     st.session_state.seen_review_ids.update(used_review_ids)
-
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
 @traceable(name="food-recommendation-pipeline", run_type="chain")
 def run_rag(user_query):
+    """
+    Main RAG function:
+    - Moderates user input before retrieval/generation
+    - Performs similarity search
+    - Returns recommendations or fallback if no relevant reviews
+    - Inserts base evaluation metrics immediately
+    - Stores data needed for optional later LLM-as-a-judge evaluation
+    - Always appends the result to conversation memory
+    """
     total_start = time.time()
 
     input_moderation = moderate_text(user_query)
@@ -1072,17 +1080,20 @@ def run_rag(user_query):
 
     retrieval_start = time.time()
 
-    # first pass: exclude seen review IDs
     docs, embedding_input_tokens = similarity_search(
+    user_query,
+    k=8,
+    exclude_review_ids=st.session_state.seen_review_ids
+)
+   # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
+    all_docs_for_query = []
+    if not docs and st.session_state.seen_review_ids:
+        docs, embedding_input_tokens = similarity_search(
         user_query,
         k=8,
-        exclude_review_ids=st.session_state.seen_review_ids
+        exclude_review_ids=None
     )
-
-    # optional diagnostic
-    print("Seen review IDs:", sorted(st.session_state.seen_review_ids))
-    print("Retrieved review IDs after exclusion:", [row.get("review_id") for row in docs])
-
+        
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     docs_for_llm = docs
@@ -1099,10 +1110,20 @@ def run_rag(user_query):
     cached_input_tokens = 0
 
     if not docs:
-        fallback = [{
+        if all_docs_for_query:
+            fallback = [{
             "restaurant": "",
             "dish": "",
             "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
+        else:
+            fallback = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "There are no relevant reviews based on your input. Try rephrasing your question or asking about something else.",
             "review_excerpt": "",
             "why_this_was_selected": "",
             "photos": []
@@ -1166,6 +1187,8 @@ def run_rag(user_query):
     else:
         cached_input_tokens = 0
 
+    print(f"Prompt cached tokens: {cached_input_tokens}")
+
     answer = response.choices[0].message.content or ""
 
     output_moderation = moderate_text(answer)
@@ -1185,7 +1208,32 @@ def run_rag(user_query):
 
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
 
-    # important: mark only after final parsed output is decided
+    all_docs_without_exclusion = []
+
+    has_real_restaurants = any(
+        (rec.get("restaurant") or "").strip()
+    for rec in parsed
+    if isinstance(rec, dict)
+)
+
+    if not has_real_restaurants:
+        all_docs_without_exclusion, _ = similarity_search(
+        user_query,
+        k=8,
+        exclude_review_ids=None
+    )
+
+    if all_docs_without_exclusion:
+        parsed = [{
+            "restaurant": "",
+            "dish": "",
+            "description": "You have already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+            "review_excerpt": "",
+            "why_this_was_selected": "",
+            "photos": []
+        }]
+
+
     mark_used_review_ids(parsed, docs)
 
     metric_row = {
