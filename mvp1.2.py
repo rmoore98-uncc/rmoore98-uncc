@@ -993,7 +993,7 @@ def insert_evaluation_metric(metric_row):
 
 # -------------------------
 # Mark review IDs used in recommendations to avoid repetition in future responses
-# --------------------------
+# --------------------------    
 def mark_used_review_ids(parsed_recommendations, docs):
     if "seen_review_ids" not in st.session_state:
         st.session_state.seen_review_ids = set()
@@ -1011,18 +1011,26 @@ def mark_used_review_ids(parsed_recommendations, docs):
         if not place_name:
             continue
 
-        # safer exact match only
-        if place_name in chosen_names:
-            if row.get("review_id") is not None:
-                used_review_ids.add(row["review_id"])
+        for chosen in chosen_names:
+            if chosen == place_name or chosen in place_name or place_name in chosen:
+                if row.get("review_id") is not None:
+                    used_review_ids.add(row["review_id"])
 
     st.session_state.seen_review_ids.update(used_review_ids)
-
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
 @traceable(name="food-recommendation-pipeline", run_type="chain")
 def run_rag(user_query):
+    """
+    Main RAG function:
+    - Moderates user input before retrieval/generation
+    - Performs similarity search
+    - Returns recommendations or fallback if no relevant reviews
+    - Inserts base evaluation metrics immediately
+    - Stores data needed for optional later LLM-as-a-judge evaluation
+    - Always appends the result to conversation memory
+    """
     total_start = time.time()
 
     input_moderation = moderate_text(user_query)
@@ -1072,17 +1080,19 @@ def run_rag(user_query):
 
     retrieval_start = time.time()
 
-    # first pass: exclude seen review IDs
     docs, embedding_input_tokens = similarity_search(
+    user_query,
+    k=8,
+    exclude_review_ids=st.session_state.seen_review_ids
+)
+   # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
+    if not docs and st.session_state.seen_review_ids:
+        docs, embedding_input_tokens = similarity_search(
         user_query,
         k=8,
-        exclude_review_ids=st.session_state.seen_review_ids
+        exclude_review_ids=None
     )
-
-    # optional diagnostic
-    print("Seen review IDs:", sorted(st.session_state.seen_review_ids))
-    print("Retrieved review IDs after exclusion:", [row.get("review_id") for row in docs])
-
+        
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     docs_for_llm = docs
@@ -1100,12 +1110,7 @@ def run_rag(user_query):
 
     if not docs:
         fallback = [{
-            "restaurant": "",
-            "dish": "",
-            "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
-            "review_excerpt": "",
-            "why_this_was_selected": "",
-            "photos": []
+            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
         }]
 
         metric_row = {
@@ -1166,6 +1171,8 @@ def run_rag(user_query):
     else:
         cached_input_tokens = 0
 
+    print(f"Prompt cached tokens: {cached_input_tokens}")
+
     answer = response.choices[0].message.content or ""
 
     output_moderation = moderate_text(answer)
@@ -1184,8 +1191,6 @@ def run_rag(user_query):
         raw_output_for_db = parsed
 
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-
-    # important: mark only after final parsed output is decided
     mark_used_review_ids(parsed, docs)
 
     metric_row = {
