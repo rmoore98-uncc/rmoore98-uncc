@@ -62,6 +62,52 @@ def sign_up_user(email, password):
         return None
 
 # -----------------------------
+# Signin Functionality
+def sign_in_user(email, password):
+    try:
+        response = auth_client.sign_in_with_password(
+            email=email,
+            password=password
+        )
+
+        if not response:
+            st.error("Login failed.")
+            return None
+
+        # Store user in Streamlit session
+        st.session_state.auth_user = response.user
+        st.session_state.auth_access_token = response.session.access_token
+        st.session_state.auth_email = email
+
+        st.success("Logged in successfully.")
+
+        return response
+
+    except Exception as e:
+        st.error(f"Login failed: {str(e)}")
+        return None
+
+# -----------------------------
+# Sign-out Functionality
+def sign_out_user():
+    try:
+        auth_client.sign_out()
+
+    except Exception:
+        # Even if API signout fails,
+        # clear local session.
+        pass
+
+    st.session_state.auth_user = None
+    st.session_state.auth_access_token = None
+    st.session_state.auth_email = None
+
+    # optional:
+    st.session_state.want_to_try = []
+    st.session_state.already_tried = []
+
+    st.success("Logged out.")
+# -----------------------------
 # GEOCODING (Address → Lat/Lon)
 # -----------------------------
 geolocator = Nominatim(user_agent="foodfinder_app", timeout=10)
@@ -1891,6 +1937,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+
+
 # Session state
 _defaults = {
     "conversation_memory": [],
@@ -1911,6 +1959,41 @@ for _k, _v in _defaults.items():
         st.session_state[_k] = _v
 
 inject_css()
+
+if not st.session_state.auth_user:
+
+    email = st.text_input("Email")
+    password = st.text_input(
+        "Password",
+        type="password"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Sign Up"):
+            sign_up_user(email, password)
+
+    with col2:
+        if st.button("Log In"):
+            result = sign_in_user(email, password)
+
+            #if result:
+            #    load_user_saved_lists(
+            #        st.session_state.auth_user.id
+            #    )
+#
+            #    st.rerun()
+
+else:
+
+    st.write(
+        f"Logged in as {st.session_state.auth_email}"
+    )
+
+    if st.button("Log Out"):
+        sign_out_user()
+        st.rerun()
 
 # Wordmark
 st.markdown(
