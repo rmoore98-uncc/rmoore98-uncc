@@ -43,14 +43,15 @@ langsmith_client = LangSmithClient()
 def sign_up_user(email, password):
     try:
         response = auth_client.sign_up(
-            email=email,
-            password=password
+            {
+                "email": email,
+                "password": password
+            }
         )
 
-        if hasattr(response, "user") and response.user:
+        if getattr(response, "user", None):
             st.success(
-                "Account created successfully. "
-                "Check your email if confirmation is required."
+                "Account created. Check your email if confirmation is enabled."
             )
             return response
 
@@ -58,7 +59,7 @@ def sign_up_user(email, password):
         return None
 
     except Exception as e:
-        st.error(f"Signup failed: {str(e)}")
+        st.error(f"Signup failed: {e}")
         return None
 
 # -----------------------------
@@ -66,25 +67,25 @@ def sign_up_user(email, password):
 def sign_in_user(email, password):
     try:
         response = auth_client.sign_in_with_password(
-            email=email,
-            password=password
+            {
+                "email": email,
+                "password": password
+            }
         )
 
         if not response:
             st.error("Login failed.")
             return None
 
-        # Store user in Streamlit session
         st.session_state.auth_user = response.user
         st.session_state.auth_access_token = response.session.access_token
         st.session_state.auth_email = email
 
-        st.success("Logged in successfully.")
-
+        st.success("Logged in.")
         return response
 
     except Exception as e:
-        st.error(f"Login failed: {str(e)}")
+        st.error(f"Login failed: {e}")
         return None
 
 # -----------------------------
