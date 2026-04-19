@@ -6,3 +6,4 @@ geopy
 pandas
 pydeck
 langsmith
+gotrue
