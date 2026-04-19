@@ -110,6 +110,37 @@ def sign_out_user():
     st.session_state.already_tried = []
 
     st.success("Logged out.")
+
+# -----------------------------
+# Load Users Lists from Previous Sessions
+#------------------------------
+def load_user_saved_lists(user_id):
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cur.execute("""
+            SELECT *
+            FROM user_restaurant_lists
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,)) 
+
+        rows = cur.fetchall()
+
+        st.session_state.want_to_try = [
+            dict(r) for r in rows if r["list_type"] == "want_to_try"
+        ]
+        st.session_state.already_tried = [
+            dict(r) for r in rows if r["list_type"] == "already_tried"
+        ]
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
 # -----------------------------
 # GEOCODING (Address → Lat/Lon)
 # -----------------------------
@@ -512,6 +543,146 @@ def get_connection(retries=10, delay=0.5):
 
 def release_connection(conn):
     connection_pool.putconn(conn)
+
+
+# -----------------------------
+# Save to Restaurant List Function
+def save_restaurant_to_list(user_id, rec, list_type):
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO user_restaurant_lists (
+                user_id, restaurant, dish, description, review_excerpt,
+                why_this_was_selected, address, latitude, longitude,
+                photos, list_type, rating, review_text
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            ON CONFLICT (user_id, restaurant, list_type)
+            DO NOTHING
+        """, (
+            user_id,
+            rec.get("restaurant"),
+            rec.get("dish"),
+            rec.get("description"),
+            rec.get("review_excerpt"),
+            rec.get("why_this_was_selected"),
+            rec.get("address"),
+            rec.get("latitude"),
+            rec.get("longitude"),
+            json.dumps(rec.get("photos", [])),
+            list_type,
+            rec.get("rating"),
+            rec.get("review_text"),
+        ))
+
+        conn.commit()
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
+
+
+# -----------------------------
+# Function to move restaurant to tried list
+# -----------------------------
+def move_restaurant_to_tried(user_id, rec):
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            DELETE FROM user_restaurant_lists
+            WHERE user_id = %s
+              AND restaurant = %s
+              AND list_type = 'want_to_try'
+        """, (user_id, rec.get("restaurant")))
+
+        cur.execute("""
+            INSERT INTO user_restaurant_lists (
+                user_id, restaurant, dish, description, review_excerpt,
+                why_this_was_selected, address, latitude, longitude,
+                photos, list_type, rating, review_text
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'already_tried', %s, %s)
+            ON CONFLICT (user_id, restaurant, list_type)
+            DO NOTHING
+        """, (
+            user_id,
+            rec.get("restaurant"),
+            rec.get("dish"),
+            rec.get("description"),
+            rec.get("review_excerpt"),
+            rec.get("why_this_was_selected"),
+            rec.get("address"),
+            rec.get("latitude"),
+            rec.get("longitude"),
+            json.dumps(rec.get("photos", [])),
+            rec.get("rating", 3),
+            rec.get("review_text", ""),
+        ))
+
+        conn.commit()
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
+
+# Update the list_Type status in DB when user updates the review/rating for already tried restaurant
+def update_tried_restaurant_review(user_id, restaurant, rating, review_text):
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE user_restaurant_lists
+            SET rating = %s,
+                review_text = %s,
+                updated_at = now()
+            WHERE user_id = %s
+              AND restaurant = %s
+              AND list_type = 'already_tried'
+        """, (rating, review_text, user_id, restaurant))
+
+        conn.commit()
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
+
+# -----------------------------
+# Remove items from lists
+def delete_saved_restaurant(user_id, restaurant, list_type):
+    conn = None
+    cur = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            DELETE FROM user_restaurant_lists
+            WHERE user_id = %s
+              AND restaurant = %s
+              AND list_type = %s
+        """, (user_id, restaurant, list_type))
+
+        conn.commit()
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            release_connection(conn)
+
 
 # -----------------------------
 # EVALUATION METRICS LOGGING
@@ -1825,8 +1996,11 @@ def render_recommendations(recs, context="chat"):
             with col_a:
                 st.markdown('<div class="primary-action">', unsafe_allow_html=True)
                 if st.button("+ Want to Try", key=f"wtt_{context}_{i}"):
-                    if not any(e.get("restaurant") == restaurant for e in st.session_state.want_to_try):
-                        st.session_state.want_to_try.append(dict(rec))
+                    if not st.session_state.auth_user:
+                        st.warning("Please log in to save restaurants.")
+                    else:
+                        save_restaurant_to_list(st.session_state.auth_user.id, rec, "want_to_try")
+                        load_user_saved_lists(st.session_state.auth_user.id)
                         st.toast(f"Added {restaurant} to Want to Try!")
                 st.markdown("</div>", unsafe_allow_html=True)
             with col_b:
