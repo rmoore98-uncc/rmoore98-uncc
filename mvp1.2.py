@@ -17,7 +17,6 @@ from collections import deque
 from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
 from langsmith.wrappers import wrap_openai
-from gotrue import SyncGoTrueClient
 from supabase_auth import SyncGoTrueClient
 
 load_dotenv()
@@ -28,12 +27,24 @@ DB_PASSWORD = os.getenv("PASSWORD")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
+st.write("DATABASE_URL loaded:", repr(DATABASE_URL))
+st.write("SUPABASE_ANON_KEY loaded:", bool(SUPABASE_ANON_KEY))
+
+if not DATABASE_URL:
+    st.error("DATABASE_URL is missing.")
+    st.stop()
+
+if not SUPABASE_ANON_KEY:
+    st.error("SUPABASE_ANON_KEY is missing.")
+    st.stop()
+
 auth_client = SyncGoTrueClient(
     url=f"{DATABASE_URL}/auth/v1",
     headers={
-        "apikey": SUPABASE_ANON_KEY
-    }
+        "apiKey": SUPABASE_ANON_KEY,
+    },
 )
+
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 langsmith_client = LangSmithClient()
