@@ -18,6 +18,7 @@ from langsmith import traceable, Client as LangSmithClient
 from langsmith.run_helpers import get_current_run_tree
 from langsmith.wrappers import wrap_openai
 from gotrue import SyncGoTrueClient
+from supabase_auth import SyncGoTrueClient
 
 load_dotenv()
 
