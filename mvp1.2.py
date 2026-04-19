@@ -1843,6 +1843,7 @@ if st.button("Clear conversation", key="clear_history"):
     st.session_state.recommended_restaurants = set()
     st.session_state.judge_scores = None
     st.session_state.seen_review_ids = set()
+    st.session_state.used_review_ids = set()
     st.rerun()
 st.markdown("</div>", unsafe_allow_html=True)
 
