@@ -711,22 +711,21 @@ def _extract_photo_urls(photos_raw):
 
 
 def attach_addresses_to_recommendations(recommendations, docs_for_map):
-    # Key all lookups by place_id (reliable) AND place_name (for LLM name matching)
-    by_place_id   = {}   # place_id  -> {address, latitude, longitude, photos}
-    by_place_name = {}   # place_name.lower() -> place_id
+    by_place_id = {}
+    by_place_name = {}
 
     for d in docs_for_map:
-        place_id   = d.get("place_id")
+        place_id = d.get("place_id")
         place_name = d.get("place_name")
         if not place_id:
             continue
 
         if place_id not in by_place_id:
             by_place_id[place_id] = {
-                "address":   d.get("address"),
-                "latitude":  d.get("latitude"),
+                "address": d.get("address"),
+                "latitude": d.get("latitude"),
                 "longitude": d.get("longitude"),
-                "photos":    [],
+                "photos": [],
             }
 
         for url in _extract_photo_urls(d.get("photos") or []):
@@ -737,6 +736,36 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
             by_place_name[place_name.strip().lower()] = place_id
 
     enriched_recs = []
+
+    for rec in recommendations:
+        new_rec = dict(rec)
+        name_key = (rec.get("restaurant") or "").strip().lower()
+
+        # No restaurant name = no address/map matching
+        if not name_key:
+            new_rec["address"] = None
+            new_rec["latitude"] = None
+            new_rec["longitude"] = None
+            new_rec["photos"] = _extract_photo_urls(rec.get("photos") or [])
+            enriched_recs.append(new_rec)
+            continue
+
+        place_id = by_place_name.get(name_key)
+        if not place_id:
+            for db_name, pid in by_place_name.items():
+                if name_key in db_name or db_name in name_key:
+                    place_id = pid
+                    break
+
+        data = by_place_id.get(place_id, {})
+        new_rec["address"] = data.get("address")
+        new_rec["latitude"] = data.get("latitude")
+        new_rec["longitude"] = data.get("longitude")
+        new_rec["photos"] = data.get("photos") or _extract_photo_urls(rec.get("photos") or [])
+
+        enriched_recs.append(new_rec)
+
+    return enriched_recs
 
     for rec in recommendations:
         new_rec = dict(rec)
