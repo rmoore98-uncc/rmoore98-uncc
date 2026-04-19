@@ -833,7 +833,7 @@ Additional rules:
 """
 
 
-def build_memory_context(max_turns=2):
+def build_memory_context(max_turns=3):
     """
     Keep memory short and lightweight so more of the prompt prefix stays stable.
     Do NOT include full assistant JSON blobs.
