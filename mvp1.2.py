@@ -114,7 +114,7 @@ def sign_out_user():
 # -----------------------------
 # Load Users Lists from Previous Sessions
 #------------------------------
-def load_user_saved_lists(user_id):
+def load_user_saved_lists(foodfinder_user_id):
     conn = None
     cur = None
     try:
@@ -124,7 +124,7 @@ def load_user_saved_lists(user_id):
         cur.execute("""
             SELECT *
             FROM user_restaurant_lists
-            WHERE user_id = %s
+            WHERE foodfinder_user_id = %s
             ORDER BY created_at DESC
         """, (user_id,)) 
 
@@ -2155,12 +2155,12 @@ if not st.session_state.auth_user:
         if st.button("Log In"):
             result = sign_in_user(email, password)
 
-            #if result:
-            #    load_user_saved_lists(
-            #        st.session_state.auth_user.id
-            #    )
-#
-            #    st.rerun()
+            if result:
+                load_user_saved_lists(
+                    st.session_state.auth_user.id
+                )
+
+                st.rerun()
 
 else:
 
