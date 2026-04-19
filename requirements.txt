@@ -7,3 +7,4 @@ pandas
 pydeck
 langsmith
 gotrue
+supabase_auth
