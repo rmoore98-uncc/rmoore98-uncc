@@ -547,7 +547,7 @@ def release_connection(conn):
 
 # -----------------------------
 # Save to Restaurant List Function
-def save_restaurant_to_list(user_id, rec, list_type):
+def save_restaurant_to_list(foodfinder_user_id, rec, list_type):
     conn = None
     cur = None
     try:
@@ -556,15 +556,15 @@ def save_restaurant_to_list(user_id, rec, list_type):
 
         cur.execute("""
             INSERT INTO user_restaurant_lists (
-                user_id, restaurant, dish, description, review_excerpt,
+                foodfinder_user_id, restaurant, dish, description, review_excerpt,
                 why_this_was_selected, address, latitude, longitude,
                 photos, list_type, rating, review_text
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT (user_id, restaurant, list_type)
+            ON CONFLICT (foodfinder_user_id, restaurant, list_type)
             DO NOTHING
         """, (
-            user_id,
+            foodfinder_user_id,
             rec.get("restaurant"),
             rec.get("dish"),
             rec.get("description"),
@@ -590,7 +590,7 @@ def save_restaurant_to_list(user_id, rec, list_type):
 # -----------------------------
 # Function to move restaurant to tried list
 # -----------------------------
-def move_restaurant_to_tried(user_id, rec):
+def move_restaurant_to_tried(foodfinder_user_id, rec):
     conn = None
     cur = None
     try:
@@ -599,22 +599,22 @@ def move_restaurant_to_tried(user_id, rec):
 
         cur.execute("""
             DELETE FROM user_restaurant_lists
-            WHERE user_id = %s
+            WHERE foodfinder_user_id = %s
               AND restaurant = %s
               AND list_type = 'want_to_try'
-        """, (user_id, rec.get("restaurant")))
+        """, (foodfinder_user_id, rec.get("restaurant")))
 
         cur.execute("""
             INSERT INTO user_restaurant_lists (
-                user_id, restaurant, dish, description, review_excerpt,
+                foodfinder_user_id, restaurant, dish, description, review_excerpt,
                 why_this_was_selected, address, latitude, longitude,
                 photos, list_type, rating, review_text
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, 'already_tried', %s, %s)
-            ON CONFLICT (user_id, restaurant, list_type)
+            ON CONFLICT (foodfinder_user_id, restaurant, list_type)
             DO NOTHING
         """, (
-            user_id,
+            foodfinder_user_id,
             rec.get("restaurant"),
             rec.get("dish"),
             rec.get("description"),
@@ -636,7 +636,7 @@ def move_restaurant_to_tried(user_id, rec):
             release_connection(conn)
 
 # Update the list_Type status in DB when user updates the review/rating for already tried restaurant
-def update_tried_restaurant_review(user_id, restaurant, rating, review_text):
+def update_tried_restaurant_review(foodfinder_user_id, restaurant, rating, review_text):
     conn = None
     cur = None
     try:
@@ -648,10 +648,10 @@ def update_tried_restaurant_review(user_id, restaurant, rating, review_text):
             SET rating = %s,
                 review_text = %s,
                 updated_at = now()
-            WHERE user_id = %s
+            WHERE foodfinder_user_id = %s
               AND restaurant = %s
               AND list_type = 'already_tried'
-        """, (rating, review_text, user_id, restaurant))
+        """, (rating, review_text, foodfinder_user_id, restaurant))
 
         conn.commit()
     finally:
@@ -662,7 +662,7 @@ def update_tried_restaurant_review(user_id, restaurant, rating, review_text):
 
 # -----------------------------
 # Remove items from lists
-def delete_saved_restaurant(user_id, restaurant, list_type):
+def delete_saved_restaurant(foodfinder_user_id, restaurant, list_type):
     conn = None
     cur = None
     try:
@@ -671,10 +671,10 @@ def delete_saved_restaurant(user_id, restaurant, list_type):
 
         cur.execute("""
             DELETE FROM user_restaurant_lists
-            WHERE user_id = %s
+            WHERE foodfinder_user_id = %s
               AND restaurant = %s
               AND list_type = %s
-        """, (user_id, restaurant, list_type))
+        """, (foodfinder_user_id, restaurant, list_type))
 
         conn.commit()
     finally:
