@@ -44,21 +44,6 @@ def normalize_address_for_geocoding(address):
     ]
     for pattern in patterns:
         address = re.sub(pattern, "", address, flags=re.IGNORECASE)
-
-    # Strip trailing country name — confuses Nominatim with abbreviated streets
-    address = re.sub(r',?\s*United States\s*$', '', address, flags=re.IGNORECASE)
-
-    # Expand common street/direction abbreviations for better geocoding
-    abbreviations = {
-        r'\bN\b': 'North', r'\bS\b': 'South', r'\bE\b': 'East', r'\bW\b': 'West',
-        r'\bNE\b': 'Northeast', r'\bNW\b': 'Northwest', r'\bSE\b': 'Southeast', r'\bSW\b': 'Southwest',
-        r'\bSt\b': 'Street', r'\bAve\b': 'Avenue', r'\bBlvd\b': 'Boulevard', r'\bDr\b': 'Drive',
-        r'\bLn\b': 'Lane', r'\bRd\b': 'Road', r'\bCt\b': 'Court', r'\bPl\b': 'Place',
-        r'\bPkwy\b': 'Parkway', r'\bHwy\b': 'Highway', r'\bCir\b': 'Circle', r'\bTrl\b': 'Trail',
-    }
-    for abbr, full in abbreviations.items():
-        address = re.sub(abbr, full, address, flags=re.IGNORECASE)
-
     return address.strip()
 
 def strip_suite(address):
@@ -167,7 +152,8 @@ def normalize_recommendation(rec):
         "description": rec.get("description", "") if isinstance(rec, dict) else "",
         "review_excerpt": rec.get("review_excerpt", "") if isinstance(rec, dict) else "",
         "why_this_was_selected": rec.get("why_this_was_selected", "") if isinstance(rec, dict) else "",
-        "photos": rec.get("photos", []) if isinstance(rec, dict) and isinstance(rec.get("photos", []), list) else []
+        "photos": rec.get("photos", []) if isinstance(rec, dict) and isinstance(rec.get("photos", []), list) else [],
+        "source_review_id": rec.get("source_review_id") if isinstance(rec, dict) else None,
     }
 
 
@@ -392,9 +378,6 @@ if "last_parsed_recommendations" not in st.session_state:
 if "last_metric_row_id" not in st.session_state:
     st.session_state.last_metric_row_id = None
 
-if "seen_review_ids" not in st.session_state:
-    st.session_state.seen_review_ids = set()
-
 # -----------------------------
 # DB CONNECTION
 # -----------------------------
@@ -432,38 +415,36 @@ def insert_evaluation_metric(metric_row):
         cur = conn.cursor()
 
         query = """
-    INSERT INTO evaluation_metrics (
-        user_query,
-        retrieved_doc_count,
-        avg_distance,
-        retrieval_time_ms,
-        generation_time_ms,
-        embedding_input_tokens,
-        llm_input_tokens,
-        llm_output_tokens,
-        llm_total_tokens,
-        cached_input_tokens,
-        json_valid,
-        fallback_used,
-        raw_output
-    )
-    VALUES (
-        %(user_query)s,
-        %(retrieved_doc_count)s,
-        %(avg_distance)s,
-        %(retrieval_time_ms)s,
-        %(generation_time_ms)s,
-        %(embedding_input_tokens)s,
-        %(llm_input_tokens)s,
-        %(llm_output_tokens)s,
-        %(llm_total_tokens)s,
-        %(cached_input_tokens)s,
-        %(json_valid)s,
-        %(fallback_used)s,
-        %(raw_output)s::jsonb
-    )
-    RETURNING id
-"""
+            INSERT INTO evaluation_metrics (
+                user_query,
+                retrieved_doc_count,
+                avg_distance,
+                retrieval_time_ms,
+                generation_time_ms,
+                embedding_input_tokens,
+                llm_input_tokens,
+                llm_output_tokens,
+                llm_total_tokens,
+                json_valid,
+                fallback_used,
+                raw_output
+            )
+            VALUES (
+                %(user_query)s,
+                %(retrieved_doc_count)s,
+                %(avg_distance)s,
+                %(retrieval_time_ms)s,
+                %(generation_time_ms)s,
+                %(embedding_input_tokens)s,
+                %(llm_input_tokens)s,
+                %(llm_output_tokens)s,
+                %(llm_total_tokens)s,
+                %(json_valid)s,
+                %(fallback_used)s,
+                %(raw_output)s::jsonb
+            )
+            RETURNING id
+        """
 
         cur.execute(query, metric_row)
         inserted_id = cur.fetchone()[0]
@@ -526,7 +507,7 @@ def update_judge_metrics(row_id, judge_results):
 # VECTOR SEARCH
 # -----------------------------
 @traceable(name="vector-search", run_type="retriever")
-def similarity_search(query_text, k=20, exclude_review_ids=None):
+def similarity_search(query_text, k=20):
     embedding_response = client.embeddings.create(
         model="text-embedding-3-small",
         input=query_text
@@ -539,8 +520,6 @@ def similarity_search(query_text, k=20, exclude_review_ids=None):
 
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    exclude_review_ids = list(exclude_review_ids or [])
 
     query = """
         SELECT
@@ -555,31 +534,17 @@ def similarity_search(query_text, k=20, exclude_review_ids=None):
         LEFT JOIN LATERAL (
             SELECT json_agg(to_jsonb(rp) - 'review_id') AS photos
             FROM review_photos rp
-            WHERE rp.place_id = rc.place_id
-              AND rp.review_id = rc.review_id
+            WHERE (rp.place_id = rc.place_id
+            and rp.review_id = rc.review_id)
             LIMIT 5
         ) photo_data ON TRUE
         WHERE rc.embedding IS NOT NULL
-          AND rc.embedding <=> %s::vector < 0.6
-          AND (
-                %s::bigint[] = '{}'
-                OR rc.review_id <> ALL(%s::bigint[])
-          )
+        AND rc.embedding <=> %s::vector < 0.6
         ORDER BY rc.embedding <=> %s::vector
         LIMIT %s
     """
 
-    cur.execute(
-        query,
-        (
-            embedding_str,
-            embedding_str,
-            exclude_review_ids,
-            exclude_review_ids,
-            embedding_str,
-            k,
-        )
-    )
+    cur.execute(query, (embedding_str, embedding_str, embedding_str, k))
     rows = cur.fetchall()
 
     cur.close()
@@ -631,18 +596,6 @@ def enrich_with_location(rows):
         new_row["latitude"] = data.get("latitude")
         new_row["longitude"] = data.get("longitude")
 
-        # Fallback: geocode if DB has no coordinates but has an address
-        if new_row["latitude"] is None or new_row["longitude"] is None:
-            address = new_row.get("address")
-            if address:
-                normalized = normalize_address_for_geocoding(address)
-                lat, lon = geocode_address(normalized)
-                if lat is None or lon is None:
-                    fallback_addr = strip_suite(normalized)
-                    lat, lon = geocode_address(fallback_addr)
-                new_row["latitude"] = lat
-                new_row["longitude"] = lon
-
         enriched.append(new_row)
 
     return enriched
@@ -650,9 +603,9 @@ def enrich_with_location(rows):
 # -----------------------------
 # BUILD MEMORY CONTEXT
 # -----------------------------
-def build_memory_context(max_turns=3):
+def build_memory_context():
 
-    memory = st.session_state.conversation_memory[-max_turns:]
+    memory = st.session_state.conversation_memory
 
     if not memory:
         return "No previous conversation."
@@ -711,21 +664,22 @@ def _extract_photo_urls(photos_raw):
 
 
 def attach_addresses_to_recommendations(recommendations, docs_for_map):
-    by_place_id = {}
-    by_place_name = {}
+    # Key all lookups by place_id (reliable) AND place_name (for LLM name matching)
+    by_place_id   = {}   # place_id  -> {address, latitude, longitude, photos}
+    by_place_name = {}   # place_name.lower() -> place_id
 
     for d in docs_for_map:
-        place_id = d.get("place_id")
+        place_id   = d.get("place_id")
         place_name = d.get("place_name")
         if not place_id:
             continue
 
         if place_id not in by_place_id:
             by_place_id[place_id] = {
-                "address": d.get("address"),
-                "latitude": d.get("latitude"),
+                "address":   d.get("address"),
+                "latitude":  d.get("latitude"),
                 "longitude": d.get("longitude"),
-                "photos": [],
+                "photos":    [],
             }
 
         for url in _extract_photo_urls(d.get("photos") or []):
@@ -736,36 +690,6 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
             by_place_name[place_name.strip().lower()] = place_id
 
     enriched_recs = []
-
-    for rec in recommendations:
-        new_rec = dict(rec)
-        name_key = (rec.get("restaurant") or "").strip().lower()
-
-        # No restaurant name = no address/map matching
-        if not name_key:
-            new_rec["address"] = None
-            new_rec["latitude"] = None
-            new_rec["longitude"] = None
-            new_rec["photos"] = _extract_photo_urls(rec.get("photos") or [])
-            enriched_recs.append(new_rec)
-            continue
-
-        place_id = by_place_name.get(name_key)
-        if not place_id:
-            for db_name, pid in by_place_name.items():
-                if name_key in db_name or db_name in name_key:
-                    place_id = pid
-                    break
-
-        data = by_place_id.get(place_id, {})
-        new_rec["address"] = data.get("address")
-        new_rec["latitude"] = data.get("latitude")
-        new_rec["longitude"] = data.get("longitude")
-        new_rec["photos"] = data.get("photos") or _extract_photo_urls(rec.get("photos") or [])
-
-        enriched_recs.append(new_rec)
-
-    return enriched_recs
 
     for rec in recommendations:
         new_rec = dict(rec)
@@ -790,233 +714,6 @@ def attach_addresses_to_recommendations(recommendations, docs_for_map):
     return enriched_recs
 
 
-# -----------------------------
-# Stable prompt for OpenAI Prompt Caching
-# -----------------------------
-STATIC_SYSTEM_PROMPT = """
-You are a professional food critic helping users choose restaurants based only on retrieved review evidence.
-
-Your job is to generate restaurant recommendations grounded in the provided review excerpts.
-
-Follow these rules exactly:
-
-1. Recommend up to THREE restaurants.
-2. Recommend exactly 3 only if 3 distinct clearly relevant restaurants are supported by the provided review excerpts.
-3. If fewer than 3 distinct relevant restaurants are supported, return fewer than 3.
-4. If no relevant restaurants are supported, return a single object with an empty restaurant name and a short explanation in the description field.
-5. Use only information contained in the provided review excerpts.
-6. Do not invent dishes, descriptions, quotes, or restaurant attributes.
-7. review_excerpt must be verbatim or lightly trimmed from the provided review text.
-8. why_this_was_selected must briefly explain why the restaurant matches the user's request.
-9. Prefer recommendations that are directly relevant to the user's requested cuisine, style, or dining experience.
-10. If the user asks for alternatives, avoid repeating restaurants already mentioned in prior conversation when other relevant supported options are available.
-
-Return ONLY valid JSON using this exact structure:
-
-[
-  {
-    "restaurant": "restaurant name",
-    "dish": "specific dish mentioned in reviews",
-    "description": "short recommendation",
-    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
-    "why_this_was_selected": "brief explanation tying the user query to the review",
-    "photos": ["photo_url1", "photo_url2"]
-  }
-]
-
-Additional rules:
-- No markdown
-- No code fences
-- No prose before or after the JSON
-- No trailing commas
-- Output must be a JSON array
-"""
-
-
-def build_memory_context(max_turns=2):
-    """
-    Keep memory short and lightweight so more of the prompt prefix stays stable.
-    Do NOT include full assistant JSON blobs.
-    """
-    memory = st.session_state.conversation_memory[-max_turns:]
-
-    if not memory:
-        return "No previous conversation."
-
-    lines = []
-
-    for turn in memory:
-        user_text = (turn.get("user") or "").strip()
-
-        assistant_items = turn.get("assistant") or []
-        restaurant_names = []
-
-        if isinstance(assistant_items, list):
-            for item in assistant_items:
-                if isinstance(item, dict):
-                    name = (item.get("restaurant") or "").strip()
-                    if name:
-                        restaurant_names.append(name)
-
-        if restaurant_names:
-            assistant_summary = "Previously recommended: " + ", ".join(restaurant_names[:5])
-        else:
-            assistant_summary = "Previously provided recommendations."
-
-        if user_text:
-            lines.append(f"User: {user_text}")
-        lines.append(f"Assistant: {assistant_summary}")
-
-    return "\n".join(lines)
-
-
-def build_review_context(docs):
-    """
-    Build review context in a stable order to improve prompt prefix consistency.
-    """
-    context = ""
-
-    sorted_docs = sorted(
-        docs,
-        key=lambda d: (
-            d.get("place_name", ""),
-            round(d.get("distance", 999), 4),
-            d.get("review_id", 0)
-        )
-    )
-
-    for d in sorted_docs:
-        photos = d.get("photos") or []
-        photo_links = []
-
-        if isinstance(photos, list):
-            for photo_item in photos:
-                if isinstance(photo_item, dict):
-                    link = photo_item.get("photo_link")
-                    if link:
-                        photo_links.append(link)
-
-        photos_text = ", ".join(photo_links) if photo_links else "No photos"
-
-        context += f"""
-Restaurant: {d.get('place_name', '')}
-Review: {d.get('chunk_text', '')}
-Similarity Score: {round(d.get('distance', 0), 4) if d.get('distance') is not None else 'N/A'}
-Photo Links: {photos_text}
-"""
-
-    return context
-
-
-def build_generation_messages(user_query, memory_context, review_context):
-    """
-    Keep the system prompt stable.
-    Put short memory before the larger changing review context.
-    """
-    dynamic_context = f"""Previous conversation:
-{memory_context}
-
-User request:
-{user_query}
-
-Review excerpts:
-{review_context}
-"""
-
-    return [
-        {"role": "system", "content": STATIC_SYSTEM_PROMPT},
-        {"role": "user", "content": dynamic_context},
-    ]
-
-
-# -----------------------------
-# EVALUATION METRICS LOGGING
-# -----------------------------
-def insert_evaluation_metric(metric_row):
-    conn = None
-    cur = None
-
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        query = """
-            INSERT INTO evaluation_metrics (
-                user_query,
-                retrieved_doc_count,
-                avg_distance,
-                retrieval_time_ms,
-                generation_time_ms,
-                embedding_input_tokens,
-                llm_input_tokens,
-                llm_output_tokens,
-                llm_total_tokens,
-                cached_input_tokens,
-                json_valid,
-                fallback_used,
-                raw_output
-            )
-            VALUES (
-                %(user_query)s,
-                %(retrieved_doc_count)s,
-                %(avg_distance)s,
-                %(retrieval_time_ms)s,
-                %(generation_time_ms)s,
-                %(embedding_input_tokens)s,
-                %(llm_input_tokens)s,
-                %(llm_output_tokens)s,
-                %(llm_total_tokens)s,
-                %(cached_input_tokens)s,
-                %(json_valid)s,
-                %(fallback_used)s,
-                %(raw_output)s::jsonb
-            )
-            RETURNING id
-        """
-
-        cur.execute(query, metric_row)
-        inserted_id = cur.fetchone()[0]
-        conn.commit()
-        return inserted_id
-
-    except Exception as e:
-        print("Error inserting evaluation metric:", e)
-        if conn:
-            conn.rollback()
-        return None
-
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            release_connection(conn)
-
-# -------------------------
-# Mark review IDs used in recommendations to avoid repetition in future responses
-# --------------------------    
-def mark_used_review_ids(parsed_recommendations, docs):
-    if "seen_review_ids" not in st.session_state:
-        st.session_state.seen_review_ids = set()
-
-    chosen_names = {
-        (rec.get("restaurant") or "").strip().lower()
-        for rec in parsed_recommendations
-        if isinstance(rec, dict) and rec.get("restaurant")
-    }
-
-    used_review_ids = set()
-
-    for row in docs:
-        place_name = (row.get("place_name") or "").strip().lower()
-        if not place_name:
-            continue
-
-        for chosen in chosen_names:
-            if chosen == place_name or chosen in place_name or place_name in chosen:
-                if row.get("review_id") is not None:
-                    used_review_ids.add(row["review_id"])
-
-    st.session_state.seen_review_ids.update(used_review_ids)
 # -----------------------------
 # MAIN RAG FUNCTION
 # -----------------------------
@@ -1047,7 +744,6 @@ def run_rag(user_query):
             "llm_input_tokens": 0,
             "llm_output_tokens": 0,
             "llm_total_tokens": 0,
-            "cached_input_tokens": 0,
             "json_valid": True,
             "fallback_used": True,
             "raw_output": json.dumps({
@@ -1072,27 +768,14 @@ def run_rag(user_query):
 
         return blocked
 
+
     run_tree = get_current_run_tree()
     if run_tree:
         st.session_state.last_langsmith_run_id = str(run_tree.id)
-
     memory_context = build_memory_context()
 
     retrieval_start = time.time()
-
-    docs, embedding_input_tokens = similarity_search(
-    user_query,
-    k=8,
-    exclude_review_ids=st.session_state.seen_review_ids
-)
-   # -- If no relevant documents are found and there are previously seen review IDs, try again without excluding them. 
-    if not docs and st.session_state.seen_review_ids:
-        docs, embedding_input_tokens = similarity_search(
-        user_query,
-        k=8,
-        exclude_review_ids=None
-    )
-        
+    docs, embedding_input_tokens = similarity_search(user_query, k=8)
     retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
 
     docs_for_llm = docs
@@ -1106,12 +789,28 @@ def run_rag(user_query):
     llm_input_tokens = 0
     llm_output_tokens = 0
     llm_total_tokens = 0
-    cached_input_tokens = 0
 
     if not docs:
-        fallback = [{
-            "description": "There are no relevant reviews based on your input, try rephrasing your question or asking about something else.",
-        }]
+        if all_docs_for_query:
+            fallback = [{
+                "restaurant": "",
+                "dish": "",
+                "description": "You’ve already seen the relevant unique reviews for this search. Try rephrasing your request or clearing the conversation to see previously used results again.",
+                "review_excerpt": "",
+                "why_this_was_selected": "",
+                "photos": [],
+                "source_review_id": None,
+            }]
+        else:
+            fallback = [{
+                "restaurant": "",
+                "dish": "",
+                "description": "There are no relevant reviews based on your input. Try rephrasing your question or asking about something else.",
+                "review_excerpt": "",
+                "why_this_was_selected": "",
+                "photos": [],
+                "source_review_id": None,
+            }]
 
         metric_row = {
             "user_query": user_query,
@@ -1123,7 +822,6 @@ def run_rag(user_query):
             "llm_input_tokens": llm_input_tokens,
             "llm_output_tokens": llm_output_tokens,
             "llm_total_tokens": llm_total_tokens,
-            "cached_input_tokens": cached_input_tokens,
             "json_valid": True,
             "fallback_used": True,
             "raw_output": json.dumps(fallback, default=str)
@@ -1145,18 +843,48 @@ def run_rag(user_query):
 
     review_context = build_review_context(docs_for_llm)
 
-    messages = build_generation_messages(
-        user_query=user_query,
-        memory_context=memory_context,
-        review_context=review_context
-    )
+    system_prompt = f"""
+You are a professional food critic.
+
+Generate up to THREE restaurant recommendations based on the review excerpts provided.
+
+Return exactly 3 recommendations only if 3 distinct relevant restaurants are provided in the review excerpts.
+If fewer than 3 distinct relevant restaurants are available, return only the relevant ones.
+
+Return ONLY valid JSON using this structure:
+
+[
+  {{
+    "restaurant": "restaurant name",
+    "dish": "specific dish mentioned in reviews",
+    "description": "short recommendation",
+    "review_excerpt": "verbatim or lightly trimmed quote from the review text",
+    "why_this_was_selected": "brief explanation tying the user query to the review",
+    "photos": ["photo_url1", "photo_url2"]
+  }}
+]
+
+Previous conversation:
+{memory_context}
+
+Review excerpts:
+{review_context}
+
+**Important:**  
+- Only recommend restaurants if the reviews are clearly relevant to the user query.
+- If there are NO relevant reviews, return a single object with an empty restaurant and description indicating no recommendations.
+- Use only information from the review excerpts provided. Do NOT make up any details.
+- Provide your justification for selecting the review_excerpt.
+"""
 
     generation_start = time.time()
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=messages,
-        temperature=0.3,
-        prompt_cache_key="foodfinder_recommendation_v1"
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ],
+        temperature=0.3
     )
     generation_time_ms = int((time.time() - generation_start) * 1000)
 
@@ -1164,14 +892,6 @@ def run_rag(user_query):
     llm_input_tokens = getattr(usage, "prompt_tokens", None)
     llm_output_tokens = getattr(usage, "completion_tokens", None)
     llm_total_tokens = getattr(usage, "total_tokens", None)
-
-    prompt_tokens_details = getattr(usage, "prompt_tokens_details", None)
-    if prompt_tokens_details:
-        cached_input_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
-    else:
-        cached_input_tokens = 0
-
-    print(f"Prompt cached tokens: {cached_input_tokens}")
 
     answer = response.choices[0].message.content or ""
 
@@ -1191,7 +911,6 @@ def run_rag(user_query):
         raw_output_for_db = parsed
 
     parsed = attach_addresses_to_recommendations(parsed, docs_for_map)
-    mark_used_review_ids(parsed, docs)
 
     metric_row = {
         "user_query": user_query,
@@ -1203,7 +922,6 @@ def run_rag(user_query):
         "llm_input_tokens": llm_input_tokens,
         "llm_output_tokens": llm_output_tokens,
         "llm_total_tokens": llm_total_tokens,
-        "cached_input_tokens": cached_input_tokens,
         "json_valid": json_valid,
         "fallback_used": False,
         "raw_output": json.dumps(raw_output_for_db, default=str)
@@ -1222,6 +940,7 @@ def run_rag(user_query):
     })
 
     return parsed
+
 # ─────────────────────────────────────────────
 # MAP RENDERER
 # ─────────────────────────────────────────────
@@ -1628,7 +1347,7 @@ def _star_display(rating: int) -> str:
 
 
 def _rec_card_html(rec: dict) -> str:
-    restaurant = rec.get("restaurant") or ""
+    restaurant = rec.get("restaurant") or "Unknown Restaurant"
     dish        = rec.get("dish", "")
     description = rec.get("description", "")
     excerpt     = rec.get("review_excerpt", "")
@@ -1817,7 +1536,6 @@ _defaults = {
     "already_tried": [],
     "review_open": {},
     "judge_scores": None,
-    "seen_review_ids": set(),
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -1842,8 +1560,6 @@ if st.button("Clear conversation", key="clear_history"):
     st.session_state.conversation_memory = []
     st.session_state.recommended_restaurants = set()
     st.session_state.judge_scores = None
-    st.session_state.seen_review_ids = set()
-    st.session_state.used_review_ids = set()
     st.rerun()
 st.markdown("</div>", unsafe_allow_html=True)
 
