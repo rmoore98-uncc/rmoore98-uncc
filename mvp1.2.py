@@ -1650,7 +1650,58 @@ def inject_css():
             font-size: 0.88rem;
             color: var(--muted);
         }
+        /* ── Header account area ── */
+        .account-chip {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 0.75rem;
+            background: var(--surface-low);
+            border: 1px solid var(--ghost-border);
+            border-radius: 1rem;
+            padding: 0.75rem 0.9rem;
+            margin-top: 0.25rem;
+            margin-bottom: 0.75rem;
+            box-shadow: 0 4px 14px var(--shadow);
+        }
 
+        .account-avatar {
+            width: 42px;
+            height: 42px;
+            min-width: 42px;
+            border-radius: 9999px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-display);
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        .account-meta {
+            min-width: 0;
+        }
+
+        .account-name {
+            font-family: var(--font-body);
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--on-surface);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .account-subtext {
+            font-family: var(--font-body);
+            font-size: 0.78rem;
+            color: var(--muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }       
         /* ── Cards ── */
         .rec-card {
             background: var(--surface-lowest);
@@ -2148,49 +2199,63 @@ inject_css()
 
 if not st.session_state.auth_user:
 
-    email = st.text_input("Email")
-    password = st.text_input(
-        "Password",
-        type="password"
+    header_left, header_right = st.columns([4, 2])
+
+with header_left:
+    st.markdown(
+        """
+        <div style="margin-bottom:1.5rem">
+            <p class="wordmark">FoodFinder</p>
+            <p class="tagline">AI-powered restaurant recommendations, grounded in real reviews.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    col1, col2 = st.columns(2)
+with header_right:
+    if not st.session_state.auth_user:
+        with st.container():
+            email = st.text_input("Email", key="header_email", label_visibility="collapsed", placeholder="Email")
+            password = st.text_input(
+                "Password",
+                type="password",
+                key="header_password",
+                label_visibility="collapsed",
+                placeholder="Password"
+            )
 
-    with col1:
-        if st.button("Sign Up"):
-            sign_up_user(email, password)
+            auth_col1, auth_col2 = st.columns(2)
 
-    with col2:
-        if st.button("Log In"):
-            result = sign_in_user(email, password)
+            with auth_col1:
+                if st.button("Sign Up", key="header_signup", use_container_width=True):
+                    sign_up_user(email, password)
 
-            if result:
-                load_user_saved_lists(
-                    st.session_state.auth_user.id
-                )
+            with auth_col2:
+                if st.button("Log In", key="header_login", use_container_width=True):
+                    result = sign_in_user(email, password)
+                    if result:
+                        load_user_saved_lists(st.session_state.auth_user.id)
+                        st.rerun()
+    else:
+        user_email = st.session_state.auth_email or ""
+        user_id = st.session_state.auth_user.id if st.session_state.auth_user else ""
 
-                st.rerun()
+        st.markdown(
+            f"""
+            <div class="account-chip">
+                <div class="account-avatar">{user_email[:1].upper() if user_email else "U"}</div>
+                <div class="account-meta">
+                    <div class="account-name">{user_email}</div>
+                    <div class="account-subtext">ID: {user_id[:8]}...</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-else:
-
-    st.write(
-        f"Logged in as {st.session_state.auth_email}"
-    )
-
-    if st.button("Log Out"):
-        sign_out_user()
-        st.rerun()
-
-# Wordmark
-st.markdown(
-    """
-    <div style="margin-bottom:1.5rem">
-        <p class="wordmark">FoodFinder</p>
-        <p class="tagline">AI-powered restaurant recommendations, grounded in real reviews.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        if st.button("Log Out", key="header_logout", use_container_width=True):
+            sign_out_user()
+            st.rerun()
 
 # ── Fixed bottom: clear button + chat input ──
 st.markdown('<div class="clear-fixed-btn">', unsafe_allow_html=True)
