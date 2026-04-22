@@ -1693,7 +1693,6 @@ def inject_css():
             overflow: hidden;
             text-overflow: ellipsis;
         }
-
         .account-subtext {
             font-family: var(--font-body);
             font-size: 0.78rem;
