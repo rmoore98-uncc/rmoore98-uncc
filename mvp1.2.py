@@ -2197,10 +2197,8 @@ for _k, _v in _defaults.items():
 
 inject_css()
 
-if not st.session_state.auth_user:
-
-    header_left, header_right = st.columns([4, 2])
-
+header_left, header_right = st.columns([4, 2])
+    
 with header_left:
     st.markdown(
         """
