@@ -2045,18 +2045,17 @@ def render_library_card(rec: dict, index: int):
     with col_b:
         st.markdown('<div class="danger-action">', unsafe_allow_html=True)
         if st.button("Remove", key=f"lib_remove_{index}"):
-    if st.session_state.auth_user:
-        delete_saved_restaurant(
-            st.session_state.auth_user.id,
-            restaurant,
-            "want_to_try"
-        )
-        load_user_saved_lists(st.session_state.auth_user.id)
-    else:
-        st.session_state.want_to_try.pop(index)
-
-    st.toast(f"Removed {restaurant} from Want to Try!")
-    st.rerun()
+            if st.session_state.auth_user:
+                delete_saved_restaurant(
+                    st.session_state.auth_user.id,
+                    restaurant,
+                    "want_to_try"
+                )
+                load_user_saved_lists(st.session_state.auth_user.id)
+            else:
+                st.session_state.want_to_try.pop(index)
+            st.toast(f"Removed {restaurant} from Want to Try!")
+            st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div style="height:1rem"></div>', unsafe_allow_html=True)
