@@ -2170,7 +2170,7 @@ def render_tried_card(rec: dict, index: int):
 st.set_page_config(
     page_title="FoodFinder",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 
